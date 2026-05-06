@@ -158,3 +158,4 @@ This keeps submissions comparable across the public and hidden evaluations.
 The short report should explain the RSSM/world-model structure, baseline
 curves, at least one attempted improvement, public metric changes, and one
 failed idea.
+
