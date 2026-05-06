@@ -3,6 +3,19 @@
 This repository is a teaching-first homework package for learning a small
 Dreamer-style world model agent in Google Colab.
 
+## Official Assignment Handout
+
+Students should start from the Chinese assignment handout:
+
+- [docs/assignment_zh.md](docs/assignment_zh.md)
+
+The short version:
+
+- Run `local_smoke` first only to verify the Colab/runtime pipeline.
+- Run the official `baseline` for `100k` environment steps.
+- Make at least one justified improvement within the `250k` step budget.
+- Submit checkpoint, public evaluation JSON, demo video, world-model prediction plot, code, and report.
+
 The goal is not to reproduce the full official DreamerV3 codebase. Instead,
 students run and modify a compact PyTorch `MiniDreamer` baseline that exposes
 the complete training loop:
@@ -158,4 +171,3 @@ This keeps submissions comparable across the public and hidden evaluations.
 The short report should explain the RSSM/world-model structure, baseline
 curves, at least one attempted improvement, public metric changes, and one
 failed idea.
-
