@@ -4,5 +4,5 @@ numpy
 matplotlib
 imageio
 imageio-ffmpeg
+jedi
 pytest
-

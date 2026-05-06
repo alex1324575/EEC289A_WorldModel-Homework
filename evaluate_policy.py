@@ -10,7 +10,7 @@ import numpy as np
 import torch
 
 from world_model_hw.checkpointing import load_checkpoint
-from world_model_hw.config import choose_device, save_json
+from world_model_hw.config import choose_device, save_json, set_runtime_env
 from world_model_hw.envs import get_env_info, make_env, reset_env, step_env
 from world_model_hw.visualization import save_video
 
@@ -27,6 +27,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    set_runtime_env()
     device = choose_device(args.device)
     agent, config, payload = load_checkpoint(args.checkpoint_dir, device)
     render_mode = "rgb_array" if args.render else None
@@ -78,4 +79,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

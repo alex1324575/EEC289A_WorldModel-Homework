@@ -11,7 +11,7 @@ import torch
 
 from benchmark_specs import public_eval_seeds
 from world_model_hw.checkpointing import load_checkpoint
-from world_model_hw.config import choose_device, save_json
+from world_model_hw.config import choose_device, save_json, set_runtime_env
 from world_model_hw.envs import get_env_info, make_env, reset_env, step_env
 from world_model_hw.models import RSSMState
 from world_model_hw.visualization import save_video
@@ -130,6 +130,7 @@ def run_episode(agent, config, env, env_info, seed: int, *, render: bool) -> tup
 
 def main() -> None:
     args = parse_args()
+    set_runtime_env()
     device = choose_device(args.device)
     agent, config, _ = load_checkpoint(args.checkpoint_dir, device)
     num_episodes = args.num_episodes or int(config["public_eval"]["num_episodes"])
@@ -180,4 +181,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

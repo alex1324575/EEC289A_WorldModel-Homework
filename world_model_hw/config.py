@@ -103,6 +103,13 @@ def choose_device(device_arg: str | None = None) -> str:
 def set_runtime_env() -> None:
     os.environ.setdefault("PYTHONUNBUFFERED", "1")
     os.environ.setdefault("OMP_NUM_THREADS", "1")
+    os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+    os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
+    os.environ.setdefault("XDG_RUNTIME_DIR", "/tmp/runtime-root")
+    try:
+        Path(os.environ["XDG_RUNTIME_DIR"]).mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
 
 
 def summarize_config(config: dict[str, Any]) -> dict[str, Any]:
@@ -117,4 +124,3 @@ def summarize_config(config: dict[str, Any]) -> dict[str, Any]:
         "world_model": config["world_model"],
         "actor_critic": config["actor_critic"],
     }
-

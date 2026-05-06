@@ -45,10 +45,11 @@ def save_video(frames: list[np.ndarray], output_path: Path, fps: int = 30) -> Pa
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        imageio.mimsave(output_path, frames, fps=fps)
+        # Classic-control frames are 500x500. This avoids a noisy Colab ffmpeg
+        # warning about resizing to a multiple of 16.
+        imageio.mimsave(output_path, frames, fps=fps, macro_block_size=1)
         return output_path
     except Exception:
         fallback = output_path.with_suffix(".gif")
         imageio.mimsave(fallback, frames, fps=fps)
         return fallback
-

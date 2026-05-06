@@ -8,7 +8,7 @@ from pathlib import Path
 
 import numpy as np
 
-from world_model_hw.config import DEFAULT_CONFIG_PATH, apply_stage_overrides, load_json, save_json
+from world_model_hw.config import DEFAULT_CONFIG_PATH, apply_stage_overrides, load_json, save_json, set_runtime_env
 from world_model_hw.envs import denormalize_action, get_env_info, make_env, reset_env, step_env
 
 
@@ -22,6 +22,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    set_runtime_env()
     config = apply_stage_overrides(load_json(args.config), args.stage)
     env = make_env(config, seed=int(config["seed"]))
     info = get_env_info(env)
@@ -54,4 +55,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
