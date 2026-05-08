@@ -6,3 +6,5 @@ imageio
 imageio-ffmpeg
 jedi
 pytest
+
+pickleshare
