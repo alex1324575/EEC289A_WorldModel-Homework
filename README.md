@@ -1,7 +1,14 @@
 # Dreamer World Model Colab Homework
 
-This repository is a teaching-first homework package for learning a small
-Dreamer-style world model agent in Google Colab.
+This repository is a teaching-first homework package for learning world models
+in Google Colab. It has two complementary tracks:
+
+1. **MiniDreamer control** on `Pendulum-v1`, where students learn the full
+   `world model -> latent imagination -> actor-critic -> policy` loop.
+2. **SmallWorld-Lite dynamics benchmark**, inspired by the paper
+   *SmallWorlds: Assessing Dynamics Understanding of World Models in Isolated
+   Environments*, where students evaluate a reward-free world model in isolated
+   physics tasks.
 
 ## Official Assignment Handout
 
@@ -13,10 +20,13 @@ The short version:
 
 - Run `local_smoke` first only to verify the Colab/runtime pipeline.
 - Run the official `baseline` for `100k` environment steps.
-- Make at least one justified improvement within the `250k` step budget.
-- Submit checkpoint, public evaluation JSON, demo video, world-model prediction plot, code, and report.
+- Run the SmallWorld smoke benchmark and at least one SmallWorld task.
+- Make at least one justified improvement within the `250k` Pendulum step
+  budget and the SmallWorld update budget.
+- Submit checkpoints, public evaluation JSON files, demo videos/plots, code, and report.
 
-The goal is not to reproduce the full official DreamerV3 codebase. Instead,
+The goal is not to reproduce the full official DreamerV3 codebase or the full
+MuJoCo SmallWorld paper benchmark. Instead,
 students run and modify a compact PyTorch `MiniDreamer` baseline that exposes
 the complete training loop:
 
@@ -28,12 +38,23 @@ the complete training loop:
 6. evaluate policy behavior and model prediction quality
 7. submit a standardized public benchmark bundle
 
+Then students run a reward-free SmallWorld-Lite benchmark to ask a different
+question:
+
+```text
+Given state/action sequences only, can the world model predict long-horizon
+physical dynamics without relying on reward or policy return?
+```
+
 ## Assignment Scope
 
-- Environment: `Pendulum-v1`
-- Observation: state vector from Gymnasium
-- Action: continuous action normalized to `[-1, 1]` inside the agent
-- Algorithm: MiniDreamer with Gaussian RSSM
+- Control environment: `Pendulum-v1`
+- SmallWorld-Lite tasks: `free_fall`, `projectile`, `circular_motion`,
+  `inclined_plane`, `simple_pendulum`, `rolling`, `rotation`, `spin`,
+  `elastic_collision`, `bouncing_ball`
+- Observation/state: fully observable state vectors
+- Action: continuous action normalized to `[-1, 1]`
+- Algorithms: MiniDreamer with Gaussian RSSM, plus reward-free RSSM dynamics model
 - Framework: PyTorch + Gymnasium
 - Default baseline budget: `100k` environment steps
 - Leaderboard budget limit: `250k` environment steps
@@ -45,6 +66,11 @@ and Embodied stack is too large for a first Colab homework. This course version
 keeps the important ideas visible as ordinary Python files that students can
 read, run, and modify.
 
+The SmallWorld paper is also research-grade and MuJoCo-based. This repository
+implements a course-sized SmallWorld-Lite version so students can work with the
+core benchmark idea in Colab: isolated dynamics, no artificial reward, random
+state/action data, and long-horizon open-loop prediction.
+
 Reference materials:
 
 - DreamerV3 code: https://github.com/danijar/dreamerv3
@@ -55,6 +81,7 @@ Reference materials:
 
 ```text
 configs/course_config.json          Course knobs and public benchmark settings
+configs/smallworld_config.json      SmallWorld-Lite dataset/training/eval settings
 configs/colab_requirements.txt      Colab dependencies
 
 world_model_hw/
@@ -66,12 +93,24 @@ world_model_hw/
   replay.py                         Episode replay buffer
   visualization.py                  Plot/video helpers
 
+smallworld_hw/
+  tasks.py                          Ten analytic SmallWorld-Lite physics tasks
+  dataset.py                        Reward-free trajectory generation/loading
+  models.py                         Dynamics-only RSSM
+  metrics.py                        10/90-step open-loop metrics
+  checkpointing.py                  SmallWorld checkpoint helpers
+  visualization.py                  Rollout plots and ghost-trajectory videos
+
 train.py                            Collect data and train MiniDreamer
 inspect_env.py                      Print environment and config summary
 evaluate_policy.py                  Restore checkpoint and evaluate policy
 generate_public_rollout.py          Generate standardized benchmark rollout
 public_eval.py                      Score benchmark rollout
 quick_world_model_check.py          Make a prediction sanity plot
+smallworld_generate_dataset.py      Generate SmallWorld-Lite datasets
+smallworld_train.py                 Train reward-free RSSM on one task
+smallworld_eval.py                  Score test and OOD long-horizon prediction
+smallworld_visualize.py             Generate SmallWorld plots/videos
 benchmark_specs.py                  Deterministic seeds and benchmark constants
 notebooks/dreamer_public_colab_template.ipynb
 tests/                              Small unit tests
@@ -143,13 +182,44 @@ python public_eval.py \
   --output-json artifacts/public_eval_bundle/public_eval.json
 ```
 
+Run the SmallWorld-Lite smoke benchmark:
+
+```bash
+python smallworld_generate_dataset.py \
+  --local-smoke \
+  --output-dir artifacts/smallworld_smoke/data
+
+python smallworld_train.py \
+  --local-smoke \
+  --task simple_pendulum \
+  --dataset-dir artifacts/smallworld_smoke/data \
+  --output-dir artifacts/smallworld_smoke/run
+
+python smallworld_eval.py \
+  --checkpoint-dir artifacts/smallworld_smoke/run/best_checkpoint \
+  --dataset-dir artifacts/smallworld_smoke/data \
+  --output-dir artifacts/smallworld_smoke/eval
+```
+
+Run the full SmallWorld-Lite dataset generation:
+
+```bash
+python smallworld_generate_dataset.py \
+  --config configs/smallworld_config.json \
+  --task all \
+  --output-dir artifacts/smallworld_data
+```
+
 ## Student Modification Boundary
 
 Students should mostly modify:
 
 - `world_model_hw/models.py`
 - `world_model_hw/agent.py`
+- `smallworld_hw/models.py`
+- `smallworld_hw/tasks.py`
 - `configs/course_config.json`
+- `configs/smallworld_config.json`
 
 Students should usually not modify:
 
@@ -166,8 +236,13 @@ This keeps submissions comparable across the public and hidden evaluations.
 - `public_eval.json`
 - `demo_policy.mp4` or `demo_policy.gif`
 - `world_model_rollout.png`
+- `smallworld_eval.json`
+- `smallworld_rollout.png`
+- `smallworld_horizon_error.png`
+- `smallworld_rollout.mp4` or `.gif` if generated
 - `short_report.pdf`
 
 The short report should explain the RSSM/world-model structure, baseline
 curves, at least one attempted improvement, public metric changes, and one
-failed idea.
+failed idea. It should also explain why SmallWorld evaluates the world model in
+isolation rather than through policy reward alone.

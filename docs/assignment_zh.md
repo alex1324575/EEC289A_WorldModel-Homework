@@ -17,14 +17,21 @@
 
 **你的 world model 学到了什么？它如何帮助 policy 学得更好？**
 
+本作业现在有第二个同等重要的问题：
+
+**如果没有 reward、没有 policy return，只给 state/action 轨迹，你的 world model 是否真的学会了动力学规律？**
+
+这个问题来自论文 *SmallWorlds: Assessing Dynamics Understanding of World Models in Isolated Environments*。论文的核心不是“多了 10 个任务”这么简单，而是提出一种更干净的 world model 评测协议：把 world model 从 RL pipeline 里拿出来，在 isolated、controllable、fully observable、reward-free 的环境中考察 long-horizon prediction。
+
 ## 2. 作业环境与代码入口
 
 本作业使用课程自带的 PyTorch `MiniDreamer`，运行环境是 Google Colab。
 
-- 环境：`Pendulum-v1`
+- 控制环境：`Pendulum-v1`
+- SmallWorld-Lite benchmark：10 个轻量物理动力学任务
 - Observation：Gymnasium state vector
 - Action：连续动作，agent 内部归一化到 `[-1, 1]`
-- 算法：RSSM world model + latent imagination actor-critic
+- 算法：RSSM world model + latent imagination actor-critic；reward-free RSSM dynamics model
 - 框架：PyTorch + Gymnasium
 - Notebook：`notebooks/dreamer_public_colab_template.ipynb`
 
@@ -35,6 +42,11 @@
 - `train.py`
 - `public_eval.py`
 - `configs/course_config.json`
+- `smallworld_hw/tasks.py`
+- `smallworld_hw/models.py`
+- `smallworld_train.py`
+- `smallworld_eval.py`
+- `configs/smallworld_config.json`
 
 ## 3. Baseline 要求
 
@@ -45,6 +57,9 @@
 - Debug smoke：`2k env steps`
 - Required baseline：`100k env steps`
 - Final / leaderboard maximum：`250k env steps`
+- SmallWorld smoke：每个 split 少量随机 trajectory，用于检查 benchmark 链路
+- SmallWorld required task：至少完成 `simple_pendulum` 或一个自选任务的完整训练、评测和可视化
+- SmallWorld optional full benchmark：生成并分析 10 个任务的数据与指标
 
 你必须至少完成：
 
@@ -52,6 +67,7 @@
 2. 跑通 `baseline`，预算为 `100k env steps`。
 3. 基于 baseline 做至少一个有理由的改动。
 4. 在不超过 `250k env steps` 的总预算内提交最终模型。
+5. 跑通 SmallWorld-Lite smoke，并至少报告一个 SmallWorld 任务的 `10-step warmup + 90-step open-loop prediction` 结果。
 
 推荐命令：
 
@@ -81,6 +97,25 @@ python generate_public_rollout.py \
 python public_eval.py \
   --rollout-npz artifacts/public_eval_bundle/rollout_public_eval.npz \
   --output-json artifacts/public_eval_bundle/public_eval.json
+```
+
+SmallWorld smoke：
+
+```bash
+python smallworld_generate_dataset.py \
+  --local-smoke \
+  --output-dir artifacts/smallworld_smoke/data
+
+python smallworld_train.py \
+  --local-smoke \
+  --task simple_pendulum \
+  --dataset-dir artifacts/smallworld_smoke/data \
+  --output-dir artifacts/smallworld_smoke/run
+
+python smallworld_eval.py \
+  --checkpoint-dir artifacts/smallworld_smoke/run/best_checkpoint \
+  --dataset-dir artifacts/smallworld_smoke/data \
+  --output-dir artifacts/smallworld_smoke/eval
 ```
 
 ## 4. 任务 A-B：跑通环境与复现 baseline
@@ -182,7 +217,17 @@ action_delta          越低越好，权重 5%
    artifacts/demo_bundle/demo_policy.mp4
    ```
 
-   这个视频回答的问题是：policy 在真实 Gymnasium 物理动力学环境里到底怎么动？Pendulum 是否能被稳定摆起或控制？
+   这个视频录制的是：**训练好的 actor policy 在真实 Gymnasium `Pendulum-v1` 环境中逐步执行动作时，环境 renderer 画出来的 pendulum 运动画面**。
+
+   更具体地说，每一帧都是一次真实 environment step 后的可视化：
+
+   ```text
+   当前 observation -> actor 选择 action/torque -> 环境物理动力学 step -> render 当前 pendulum 角度和速度
+   ```
+
+   它不是 world model “脑内想象”的视频，也不是训练过程录像。它是 checkpoint 恢复后，policy 在真实环境里跑一个 episode 的行为录像。
+
+   这个视频回答的问题是：policy 在真实 Gymnasium 物理动力学环境里到底怎么动？Pendulum 是否能被稳定摆起或控制？动作是否抖动？是否只是卡在某个角度不动？
 
 2. **World model rollout plot**
 
@@ -200,7 +245,9 @@ action_delta          越低越好，权重 5%
    artifacts/demo_bundle/world_model_rollout.png
    ```
 
-   这个图回答的问题是：world model open-loop 预测出来的 observation trajectory 是否跟真实 trajectory 有相似趋势？
+   这个图不是视频，而是 world model 的“想象轨迹”对比图。它固定一段真实 action sequence，然后让 world model 在不继续读取真实 observation 的情况下 open-loop 往前预测，最后把预测 observation 和真实 observation 画在一起。
+
+   这个图回答的问题是：world model open-loop 预测出来的 observation trajectory 是否跟真实 trajectory 有相似趋势？预测误差是不是随着 horizon 变长快速发散？
 
 你的视频和图应该放进报告中。视频本身不是单独打分项，但它能帮助解释为什么某些量化指标好或坏。
 
@@ -270,7 +317,109 @@ JAX/Embodied 复杂工程栈                 PyTorch 单仓库脚本
 
 如果课程之后要升级，可以把同一个 MiniDreamer 框架迁移到 MuJoCo/Gymnasium 的连续控制任务，例如 `HalfCheetah-v4`、`Walker2d-v4` 或 DeepMind Control Suite。但第一版作业选择 `Pendulum-v1`，是为了保证所有学生能先完整理解 world model 训练流程，而不是被 MuJoCo 安装、机器人接触动力学和大规模训练成本卡住。
 
-## 8. 任务 C-F：解释、改进、消融和提交
+## 8. SmallWorld-Lite Benchmark：论文思想融入
+
+论文提出的 SmallWorld Benchmark 有三个关键点：
+
+- **Isolated dynamics**：每个任务只突出一种或少数几种物理规律，例如重力、碰撞、周期运动或旋转。
+- **Reward-free evaluation**：训练和评测 world model 时不使用人工 reward，避免把“学会 reward shortcut”误认为“理解 dynamics”。
+- **Long-horizon open-loop prediction**：用前几步真实状态 warm-up，然后不再喂真实 observation，让模型自己往后预测，观察误差如何随 horizon 增长。
+
+本作业实现课程版 `SmallWorld-Lite`。它不是论文 MuJoCo benchmark 的完整复现，而是用轻量解析动力学实现同样的评测思想，保证 Colab 可运行、代码可读、指标可解释。
+
+### 8.1 十个 SmallWorld-Lite 任务
+
+本作业包含以下 10 个任务：
+
+- `free_fall`：自由落体和地面弹跳，考察重力与反弹。
+- `projectile`：抛体运动，考察水平匀速和竖直加速度叠加。
+- `circular_motion`：圆周运动，考察半径约束和切向速度。
+- `inclined_plane`：斜面运动，考察重力沿斜面的分解和摩擦。
+- `simple_pendulum`：单摆，考察周期运动、相位和能量趋势。
+- `rolling`：刚体滚动，考察平动和转动耦合。
+- `rotation`：刚体旋转，考察角速度和角度状态更新。
+- `spin`：陀螺式旋转失稳，考察旋转衰减和倾斜增长。
+- `elastic_collision`：一维弹性碰撞，考察碰撞瞬间速度交换和能量趋势。
+- `bouncing_ball`：二维盒中弹跳球，考察边界反射和长期误差累积。
+
+这些任务的目的不是替代 `Pendulum-v1` 控制任务，而是补充它。`Pendulum-v1` 回答“world model 能不能帮助 actor 学 policy”，SmallWorld 回答“world model 本身是否学到了 dynamics”。
+
+### 8.2 SmallWorld 运行方式
+
+生成数据：
+
+```bash
+python smallworld_generate_dataset.py \
+  --config configs/smallworld_config.json \
+  --task all \
+  --output-dir artifacts/smallworld_data
+```
+
+训练一个 reward-free dynamics model：
+
+```bash
+python smallworld_train.py \
+  --config configs/smallworld_config.json \
+  --task simple_pendulum \
+  --dataset-dir artifacts/smallworld_data \
+  --output-dir artifacts/smallworld_runs/simple_pendulum
+```
+
+评测：
+
+```bash
+python smallworld_eval.py \
+  --checkpoint-dir artifacts/smallworld_runs/simple_pendulum/best_checkpoint \
+  --dataset-dir artifacts/smallworld_data \
+  --output-dir artifacts/smallworld_eval/simple_pendulum
+```
+
+可视化：
+
+```bash
+python smallworld_visualize.py \
+  --checkpoint-dir artifacts/smallworld_runs/simple_pendulum/best_checkpoint \
+  --dataset-dir artifacts/smallworld_data \
+  --output-dir artifacts/smallworld_viz/simple_pendulum
+```
+
+### 8.3 SmallWorld 指标
+
+SmallWorld 输出的主要指标包括：
+
+- `one_step_state_rmse`：一步 state prediction error，越低越好。
+- `open_loop_15_rmse`：15 步 open-loop state prediction error，越低越好。
+- `open_loop_90_rmse`：论文式长时域 90 步 open-loop error，越低越好。
+- `horizon_error_auc`：horizon error curve 的平均误差，衡量误差随时间增长的总体趋势。
+- `energy_drift`：预测轨迹和真实轨迹的能量差异，适用于 pendulum、collision、bouncing、rolling 等任务。
+- `constraint_violation`：预测是否违反几何/物理约束，例如圆周半径约束或 rolling no-slip 约束。
+- `ood_open_loop_90_rmse`：在 OOD 初始条件或物理参数下的长时域误差。
+
+SmallWorld 的可视化包括：
+
+- `smallworld_rollout.png`：真实 state trajectory 和模型 open-loop prediction 的逐维对比。
+- `smallworld_horizon_error.png`：误差随 prediction horizon 增长的曲线。
+- `smallworld_rollout.mp4`：真实轨迹和模型预测 ghost trajectory 的叠加动画。
+
+注意：`smallworld_rollout.mp4` 和 `demo_policy.mp4` 录制的不是同一件事。`demo_policy.mp4` 是 actor 在真实 `Pendulum-v1` 环境中执行 policy；`smallworld_rollout.mp4` 是固定真实 action sequence 后，比较真实物理轨迹和 world model 预测轨迹。
+
+### 8.4 SmallWorld 中学生可以改什么
+
+推荐改动：
+
+- 修改 `smallworld_hw/models.py` 中 RSSM 容量、decoder、prior/posterior 结构。
+- 修改 `configs/smallworld_config.json` 中 latent size、batch length、训练步数、loss weight。
+- 修改 `smallworld_hw/tasks.py` 中某个任务的参数范围，用于研究 OOD generalization。
+- 增加 deterministic latent ablation，比较 stochastic latent 是否必要。
+- 增加 Transformer sequence model 作为 optional baseline，和 RSSM 比较 horizon error。
+
+通常不要修改：
+
+- `smallworld_eval.py` 的 metric 定义。
+- dataset `.npz` schema。
+- checkpoint restore 逻辑。
+
+## 9. 任务 C-F：解释、改进、消融和提交
 
 ### Task C：解释 MiniDreamer
 
@@ -325,16 +474,23 @@ your_method      <=250k  ...           ...           ...              ...       
 - `artifacts/public_eval_bundle/public_eval.json`
 - `artifacts/demo_bundle/demo_policy.mp4` 或 `.gif`
 - `artifacts/demo_bundle/world_model_rollout.png`
+- `artifacts/smallworld_eval/.../smallworld_eval.json`
+- `artifacts/smallworld_viz/.../smallworld_rollout.png`
+- `artifacts/smallworld_viz/.../smallworld_horizon_error.png`
+- `artifacts/smallworld_viz/.../smallworld_rollout.mp4` 或 `.gif`，如果生成成功
 - 修改后的代码
 - `short_report.pdf`
 
-## 9. 允许修改和禁止修改
+## 10. 允许修改和禁止修改
 
 推荐修改：
 
 - `configs/course_config.json`
 - `world_model_hw/models.py`
 - `world_model_hw/agent.py`
+- `configs/smallworld_config.json`
+- `smallworld_hw/models.py`
+- `smallworld_hw/tasks.py`
 
 谨慎修改：
 
@@ -352,14 +508,15 @@ your_method      <=250k  ...           ...           ...              ...       
 
 如果你修改 public evaluation 或 rollout schema，你的结果将不能和其他同学公平比较。
 
-## 10. 评分标准
+## 11. 评分标准
 
 总分 100 分。
 
-- 15 分：Colab 和工程链路跑通，包括 smoke test、checkpoint、demo、public eval。
-- 20 分：成功复现 `100k` baseline，并记录完整训练和评测结果。
-- 20 分：正确解释 world model、RSSM、KL、imagination actor-critic 的概念和代码对应关系。
-- 20 分：完成至少一个有动机的改进，并进行 baseline vs modified 对比。
+- 15 分：Colab 和工程链路跑通，包括 Pendulum smoke、SmallWorld smoke、checkpoint、demo、public eval。
+- 15 分：成功复现 `100k` Pendulum baseline，并记录完整训练和评测结果。
+- 15 分：正确解释 world model、RSSM、KL、imagination actor-critic 的概念和代码对应关系。
+- 15 分：正确解释 SmallWorld benchmark 的 reward-free / isolated / long-horizon 评测思想。
+- 15 分：完成至少一个有动机的改进，并进行 baseline vs modified 对比。
 - 15 分：实验分析质量，包括失败尝试、metric tradeoff、为什么改动有效或无效。
 - 10 分：提交规范，包括文件齐全、代码可运行、报告清晰。
 
@@ -368,8 +525,9 @@ your_method      <=250k  ...           ...           ...              ...       
 - 清晰的 ablation，多于一个改动方向但控制变量合理。
 - 额外可视化 latent rollout 或 prediction error。
 - 对 DreamerV3 论文思想和本作业 MiniDreamer 简化版的差异有准确讨论。
+- 在多个 SmallWorld 任务上比较同一个模型改动的效果，并解释不同物理规律上的失败模式。
 
-## 11. 报告要求
+## 12. 报告要求
 
 报告建议 3-4 页，必须回答：
 
@@ -380,8 +538,10 @@ your_method      <=250k  ...           ...           ...              ...       
 5. 你修改了什么？为什么这样改？
 6. 哪些指标提升了？哪些指标变差了？
 7. 你失败过什么方案？你从失败中学到了什么？
+8. SmallWorld 为什么不使用 reward？它和 Pendulum policy return 评测互补在哪里？
+9. 至少一个 SmallWorld 任务中，90-step open-loop prediction 是如何失败或成功的？
 
-## 12. 如何判断训练是否成功
+## 13. 如何判断训练是否成功
 
 如果只是 `local_smoke`：
 
@@ -404,7 +564,15 @@ your_method      <=250k  ...           ...           ...              ...       
 - 所有 episode return 都极差且 action 几乎不变。
 - open-loop prediction 完全发散，且 one-step prediction 也很差。
 
-## 13. 高层意义
+如果是 SmallWorld：
+
+- 看到 `smallworld_eval.json`，说明 benchmark scoring 成功。
+- 看到 `smallworld_rollout.png` 和 `smallworld_horizon_error.png`，说明可视化成功。
+- smoke run 的误差不一定低，因为训练 update 很少。
+- 正式 run 中，`one_step_state_rmse` 应明显低于长时域误差。
+- 如果 `open_loop_90_rmse` 很差但 `one_step_state_rmse` 还可以，说明模型存在典型 error accumulation。
+
+## 14. 高层意义
 
 这份作业的核心价值是让你理解：智能体不一定只能通过真实试错学习。World model 的意义在于把环境动力学压缩进一个可预测的 latent space，让 agent 能在模型内部做低成本 planning / imagination。
 
@@ -415,3 +583,11 @@ Dreamer 的关键思想可以概括为：
 ```
 
 这也是很多 embodied AI、robotics、autonomous driving 和 generalist agent 系统中反复出现的思想：先学会预测世界，再学会在预测的世界中做决策。
+
+SmallWorld 补充了另一个关键思想：
+
+```text
+去掉 reward 和 policy -> 固定 state/action 数据 -> 长时域 open-loop 预测 -> 诊断 world model 是否理解 dynamics
+```
+
+这两条线合在一起，构成了本作业的核心：既理解 Dreamer 如何用 world model 训练控制策略，也理解如何独立评测 world model 本身的动力学理解能力。
