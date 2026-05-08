@@ -1,0 +1,14 @@
+<mujoco model="circular_motion">
+  <option timestep="0.04" gravity="0 0 0"/>
+  <visual><global offwidth="320" offheight="240"/></visual>
+  <worldbody>
+    <light pos="0 -4 5"/>
+    <camera name="track" pos="0 -5 4" xyaxes="1 0 0 0 0.7 0.72"/>
+    <body name="arm" pos="0 0 0.2">
+      <joint name="hinge" type="hinge" axis="0 0 1" damping="0.0"/>
+      <geom type="capsule" fromto="0 0 0 1 0 0" size="0.02" mass="0.1" rgba="0.25 0.25 0.25 1"/>
+      <geom name="ball" type="sphere" pos="1 0 0" size="0.1" mass="1" rgba="0.2 0.8 0.9 1"/>
+    </body>
+  </worldbody>
+  <actuator><motor name="torque" joint="hinge" gear="1"/></actuator>
+</mujoco>

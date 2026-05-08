@@ -1,0 +1,13 @@
+<mujoco model="projectile">
+  <option timestep="0.04" gravity="0 0 -9.81"/>
+  <visual><global offwidth="320" offheight="240"/></visual>
+  <worldbody>
+    <light pos="0 -4 5"/>
+    <camera name="track" pos="5 -8 4" xyaxes="1 0 0 0 0.5 0.87"/>
+    <geom name="floor" type="plane" size="8 5 0.1" rgba="0.85 0.85 0.82 1" condim="3"/>
+    <body name="ball" pos="-2 0 1">
+      <freejoint name="ball_free"/>
+      <geom name="ball_geom" type="sphere" size="0.11" mass="1" rgba="0.9 0.3 0.1 1"/>
+    </body>
+  </worldbody>
+</mujoco>

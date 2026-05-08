@@ -3,6 +3,7 @@ __pycache__/
 .ipynb_checkpoints/
 .pytest_cache/
 .venv/
+.venv_colab/
 .venv_gpu/
 configs/colab_runtime_config.json
 artifacts/

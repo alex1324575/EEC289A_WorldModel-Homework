@@ -1,0 +1,13 @@
+<mujoco model="spin">
+  <option timestep="0.04" gravity="0 0 -9.81"/>
+  <visual><global offwidth="320" offheight="240"/></visual>
+  <worldbody>
+    <light pos="0 -4 5"/>
+    <camera name="track" pos="2.5 -5 3" xyaxes="1 0 0 0 0.52 0.85"/>
+    <geom name="floor" type="plane" size="3 3 0.1" rgba="0.88 0.88 0.86 1" friction="0.5 0.02 0.02"/>
+    <body name="top" pos="0 0 0.45">
+      <freejoint name="top_free"/>
+      <geom name="top_geom" type="cylinder" size="0.18 0.35" mass="1" rgba="0.45 0.2 0.85 1"/>
+    </body>
+  </worldbody>
+</mujoco>

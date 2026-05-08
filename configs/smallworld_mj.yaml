@@ -1,0 +1,52 @@
+homework_name: "From Pendulum Dynamics to SmallWorld-MJ World Models"
+benchmark_name: "SmallWorld-MJ Course Benchmark"
+seed: 7
+
+dataset:
+  episode_steps: 110
+
+profiles:
+  smoke:
+    split_episodes:
+      train: 8
+      val: 4
+      test: 4
+      ood: 4
+  colab:
+    split_episodes:
+      train: 128
+      val: 32
+      test: 32
+      ood: 32
+  full:
+    split_episodes:
+      train: 512
+      val: 64
+      test: 64
+      ood: 64
+
+evaluation:
+  warmup: 10
+  horizon: 90
+  batch_size: 64
+
+taskpacks:
+  smallworld_all:
+    - simple_pendulum
+    - projectile
+    - circular_motion
+    - bouncing_ball
+    - rolling
+    - free_fall
+    - inclined_plane
+    - elastic_collision
+    - rotation
+    - spin
+  pendulum_only:
+    - simple_pendulum
+  smallworld_core:
+    - simple_pendulum
+    - projectile
+    - circular_motion
+    - bouncing_ball
+    - rolling

@@ -1,9 +1,10 @@
 torch
-gymnasium[classic-control]
 numpy
 matplotlib
 imageio
 imageio-ffmpeg
+mujoco==3.8.0
+PyYAML
 jedi
 pytest
 
