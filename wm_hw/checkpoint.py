@@ -7,13 +7,9 @@ from typing import Any
 
 import torch
 
-from .baseline_model import BaselineResidualMLP
-
 
 def build_model(model_name: str, cfg: dict[str, Any]) -> torch.nn.Module:
     mcfg = cfg.get("model", {})
-    if model_name == "baseline":
-        return BaselineResidualMLP(hidden_dim=int(mcfg.get("hidden_dim", 128)), num_layers=int(mcfg.get("num_layers", 2)))
     if model_name == "student":
         from student.model import StudentWorldModel
 

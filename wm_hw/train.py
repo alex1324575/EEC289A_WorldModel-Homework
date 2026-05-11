@@ -1,4 +1,4 @@
-"""Locked training script for baseline/student world models."""
+"""Locked training script for the starter student world model."""
 
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ from .config import load_config, save_json, set_seed
 from .dataset import load_split
 from .eval_horizon import evaluate_model_on_split
 from .horizon import available_horizon
-from .locked_losses import locked_one_step_delta_loss
 from .normalizer import Normalizer
 
 
@@ -47,8 +46,8 @@ def _batch(
 
 
 def _compute_loss(model_name: str, model, batch: dict[str, torch.Tensor], normalizer: Normalizer, cfg: dict[str, Any]):
-    if model_name == "baseline":
-        return locked_one_step_delta_loss(model, batch, normalizer, cfg)
+    if model_name != "student":
+        raise KeyError(f"Unknown model '{model_name}'. This release trains only the student starter model.")
     from student.losses import compute_loss
 
     return compute_loss(model, batch, normalizer, cfg)
@@ -146,7 +145,7 @@ def train(config_path: str | Path, model_name: str, dataset_dir: str | Path, out
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
-    parser.add_argument("--model", choices=["baseline", "student"], required=True)
+    parser.add_argument("--model", choices=["student"], default="student")
     parser.add_argument("--dataset-dir", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--smoke", action="store_true")

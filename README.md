@@ -28,8 +28,9 @@ student/metrics.py
 configs/student.yaml
 ```
 
-Locked code handles MuJoCo data generation, normalization, baseline training,
-official rollout, official nMSE/VPT metrics, checkpointing, and hidden grading.
+Locked code handles MuJoCo data generation, normalization, official rollout,
+official nMSE/VPT metrics, checkpointing, and hidden grading. The runnable
+starter in `student/` is the only public baseline.
 
 ## Data
 
@@ -71,7 +72,6 @@ Lightweight dev run:
 
 ```bash
 python -m wm_hw.dataset --config configs/dev.yaml --output-dir data/dev --smoke
-python -m wm_hw.train --config configs/baseline.yaml --model baseline --dataset-dir data/dev --output-dir artifacts/baseline --smoke
 python -m wm_hw.train --config configs/student.yaml --model student --dataset-dir data/dev --output-dir artifacts/student --smoke
 
 python -m wm_hw.eval_horizon \
