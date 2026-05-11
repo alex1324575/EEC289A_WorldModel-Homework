@@ -7,8 +7,6 @@ from typing import Any
 
 import torch
 
-from student.model import StudentWorldModel
-from solution.model import SolutionWorldModel
 from .baseline_model import BaselineResidualMLP
 
 
@@ -17,9 +15,9 @@ def build_model(model_name: str, cfg: dict[str, Any]) -> torch.nn.Module:
     if model_name == "baseline":
         return BaselineResidualMLP(hidden_dim=int(mcfg.get("hidden_dim", 128)), num_layers=int(mcfg.get("num_layers", 2)))
     if model_name == "student":
+        from student.model import StudentWorldModel
+
         return StudentWorldModel(hidden_dim=int(mcfg.get("hidden_dim", 128)), num_layers=int(mcfg.get("num_layers", 2)), use_gru=bool(mcfg.get("use_gru", False)))
-    if model_name == "solution":
-        return SolutionWorldModel(hidden_dim=int(mcfg.get("hidden_dim", 192)), num_layers=int(mcfg.get("num_layers", 2)), use_gru=bool(mcfg.get("use_gru", True)))
     raise KeyError(f"Unknown model '{model_name}'.")
 
 

@@ -23,6 +23,11 @@ def rollout_loss(model, states: torch.Tensor, actions: torch.Tensor, normalizer,
     # Train local open-loop stability at random positions, not only at the
     # beginning of each stored window.
     needed_states = int(warmup_steps) + int(horizon) + 1
+    if states.shape[1] < needed_states:
+        raise ValueError(
+            "training.train_sequence_length is too short for rollout loss: "
+            f"need at least {needed_states - 1} actions for warmup={warmup_steps}, horizon={horizon}."
+        )
     max_start = states.shape[1] - needed_states
     if max_start > 0:
         start = int(torch.randint(0, max_start + 1, (), device=states.device).item())

@@ -107,6 +107,28 @@ def load_split(dataset_dir: str | Path, split: str) -> dict[str, np.ndarray]:
         return {key: data[key] for key in data.files}
 
 
+def load_metadata(dataset_dir: str | Path) -> dict[str, Any]:
+    path = Path(dataset_dir) / "metadata.json"
+    if not path.exists():
+        raise FileNotFoundError(path)
+    with path.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def validate_split_against_metadata(data: dict[str, np.ndarray], metadata: dict[str, Any], split: str) -> None:
+    expected = metadata.get("splits", {}).get(split)
+    if expected is None:
+        raise ValueError(f"metadata does not contain split '{split}'.")
+    if list(data["states"].shape) != list(expected["states"]):
+        raise ValueError(f"{split} states shape {data['states'].shape} does not match metadata {expected['states']}.")
+    if list(data["actions"].shape) != list(expected["actions"]):
+        raise ValueError(f"{split} actions shape {data['actions'].shape} does not match metadata {expected['actions']}.")
+    if int(data["states"].shape[1]) != int(metadata["window_states"]):
+        raise ValueError("states time dimension does not match metadata window_states.")
+    if int(data["actions"].shape[1]) != int(metadata["window_actions"]):
+        raise ValueError("actions time dimension does not match metadata window_actions.")
+
+
 def generate_dataset(config_path: str | Path, output_dir: str | Path, *, smoke: bool = False) -> dict[str, Any]:
     cfg = load_config(config_path)
     spec = dataset_window_spec(cfg["dataset"])
@@ -134,7 +156,7 @@ def generate_dataset(config_path: str | Path, output_dir: str | Path, *, smoke: 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/colab.yaml")
+    parser.add_argument("--config", default="configs/dev.yaml")
     parser.add_argument("--output-dir", default="data/public")
     parser.add_argument("--smoke", action="store_true")
     args = parser.parse_args()

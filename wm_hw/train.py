@@ -1,4 +1,4 @@
-"""Locked training script for baseline/student/solution world models."""
+"""Locked training script for baseline/student world models."""
 
 from __future__ import annotations
 
@@ -10,11 +10,12 @@ import json
 import numpy as np
 import torch
 
-from student.losses import compute_loss
 from .checkpoint import build_model, save_checkpoint
 from .config import load_config, save_json, set_seed
 from .dataset import load_split
 from .eval_horizon import evaluate_model_on_split
+from .horizon import available_horizon
+from .locked_losses import locked_one_step_delta_loss
 from .normalizer import Normalizer
 
 
@@ -24,11 +25,50 @@ def _device(cfg: dict[str, Any]) -> torch.device:
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def _batch(data: dict[str, np.ndarray], indices: np.ndarray, device: torch.device) -> dict[str, torch.Tensor]:
+def _batch(
+    data: dict[str, np.ndarray],
+    indices: np.ndarray,
+    device: torch.device,
+    *,
+    sequence_length: int | None,
+    rng: np.random.Generator,
+) -> dict[str, torch.Tensor]:
+    states_np = data["states"][indices]
+    actions_np = data["actions"][indices]
+    if sequence_length is not None and int(sequence_length) > 0 and int(sequence_length) < actions_np.shape[1]:
+        length = int(sequence_length)
+        start = int(rng.integers(0, actions_np.shape[1] - length + 1))
+        states_np = states_np[:, start : start + length + 1]
+        actions_np = actions_np[:, start : start + length]
     return {
-        "states": torch.as_tensor(data["states"][indices], dtype=torch.float32, device=device),
-        "actions": torch.as_tensor(data["actions"][indices], dtype=torch.float32, device=device),
+        "states": torch.as_tensor(states_np, dtype=torch.float32, device=device),
+        "actions": torch.as_tensor(actions_np, dtype=torch.float32, device=device),
     }
+
+
+def _compute_loss(model_name: str, model, batch: dict[str, torch.Tensor], normalizer: Normalizer, cfg: dict[str, Any]):
+    if model_name == "baseline":
+        return locked_one_step_delta_loss(model, batch, normalizer, cfg)
+    from student.losses import compute_loss
+
+    return compute_loss(model, batch, normalizer, cfg)
+
+
+def _checkpoint_score(metrics: dict[str, Any], metric_name: str) -> float:
+    key = metric_name.split("/", 1)[-1]
+    if key not in metrics:
+        raise KeyError(f"checkpoint_metric '{metric_name}' not found in eval metrics. Available keys include: {sorted(metrics)[:12]}")
+    return float(metrics[key])
+
+
+def _is_better(value: float, best: float | None, mode: str) -> bool:
+    if best is None:
+        return True
+    if mode == "min":
+        return value <= best
+    if mode == "max":
+        return value >= best
+    raise ValueError(f"checkpoint_mode must be 'max' or 'min', got {mode!r}.")
 
 
 def train(config_path: str | Path, model_name: str, dataset_dir: str | Path, output_dir: str | Path, *, smoke: bool = False) -> dict[str, Any]:
@@ -47,13 +87,20 @@ def train(config_path: str | Path, model_name: str, dataset_dir: str | Path, out
     updates = int(cfg["training"]["smoke_updates"] if smoke else cfg["training"]["updates"])
     batch_size = int(cfg["training"]["batch_size"])
     eval_every = int(cfg["training"]["smoke_eval_every"] if smoke else cfg["training"]["eval_every"])
+    sequence_length = int(cfg["training"].get("train_sequence_length", 64))
+    val_horizon = int(cfg["training"].get("val_horizon", cfg.get("eval", {}).get("horizon", 100)))
+    val_horizon = min(val_horizon, available_horizon(val_data["states"].shape, val_data["actions"].shape, int(cfg.get("eval", {}).get("warmup_steps", 10))))
+    max_val_windows = int(cfg["training"].get("max_val_windows", 128))
+    checkpoint_metric = str(cfg["training"].get("checkpoint_metric", "val/VPT80@0.25"))
+    checkpoint_mode = str(cfg["training"].get("checkpoint_mode", "max"))
     rng = np.random.default_rng(int(cfg.get("seed", 0)) + 17)
-    best_h80 = -1.0
+    best_score: float | None = None
     best_metrics: dict[str, float] = {}
     print(f"[train] model={model_name} device={device} updates={updates} smoke={smoke}")
     for update in range(1, updates + 1):
         indices = rng.integers(0, len(train_data["states"]), size=batch_size)
-        loss, metrics = compute_loss(model, _batch(train_data, indices, device), normalizer, cfg)
+        batch = _batch(train_data, indices, device, sequence_length=sequence_length, rng=rng)
+        loss, metrics = _compute_loss(model_name, model, batch, normalizer, cfg)
         opt.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), float(cfg["training"]["grad_clip_norm"]))
@@ -65,13 +112,15 @@ def train(config_path: str | Path, model_name: str, dataset_dir: str | Path, out
                 normalizer,
                 cfg,
                 device=device,
-                max_windows=min(128, len(val_data["states"])),
+                max_windows=min(max_val_windows, len(val_data["states"])),
+                horizon=val_horizon,
             )
-            eval_metrics.pop("survival_steps", None)
+            eval_metrics.pop("per_window_vpt@0.25", None)
             line = " ".join([f"{k}={v:.4f}" for k, v in {**metrics, **eval_metrics}.items() if isinstance(v, (float, int))])
             print(f"[train] update={update} {line}")
-            if float(eval_metrics["H80"]) >= best_h80:
-                best_h80 = float(eval_metrics["H80"])
+            score = _checkpoint_score(eval_metrics, checkpoint_metric)
+            if _is_better(score, best_score, checkpoint_mode):
+                best_score = score
                 best_metrics = {**metrics, **eval_metrics}
                 save_checkpoint(
                     output_dir / "best_checkpoint",
@@ -82,7 +131,14 @@ def train(config_path: str | Path, model_name: str, dataset_dir: str | Path, out
                     step=update,
                     metrics=best_metrics,
                 )
-    summary = {"model": model_name, "updates": updates, "best_H80": best_h80, "metrics": best_metrics}
+    summary = {
+        "model": model_name,
+        "updates": updates,
+        "checkpoint_metric": checkpoint_metric,
+        "checkpoint_mode": checkpoint_mode,
+        "best_score": best_score,
+        "metrics": best_metrics,
+    }
     save_json(output_dir / "train_summary.json", summary)
     return summary
 
@@ -90,7 +146,7 @@ def train(config_path: str | Path, model_name: str, dataset_dir: str | Path, out
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
-    parser.add_argument("--model", choices=["baseline", "student", "solution"], required=True)
+    parser.add_argument("--model", choices=["baseline", "student"], required=True)
     parser.add_argument("--dataset-dir", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--smoke", action="store_true")

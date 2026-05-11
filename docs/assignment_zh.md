@@ -1,6 +1,6 @@
-# 作业：InvertedPendulum Survival Scoreboard World Model
+# 作业：InvertedPendulum VPT Scoreboard World Model
 
-本作业只训练 **world model**，不训练 policy，不使用 reward，不实现 actor/critic，也不维护自定义 MuJoCo XML。环境固定为 Gymnasium 官方 `InvertedPendulum-v5`。
+本作业只训练一个 **world model**。不训练 policy，不使用 reward，不实现 actor/critic，也不要求学生写 MuJoCo XML。Gymnasium `InvertedPendulum-v5` 背后的 MuJoCo 是 ground-truth physics simulator。
 
 核心问题：
 
@@ -8,29 +8,23 @@
 s_hat[t+1] = f_theta(s_hat[t], a[t])
 ```
 
-给定 MuJoCo 真实 state/action trajectory，模型先看一小段真实状态作为 warm-up，然后只使用自己的预测状态递归 rollout，直到达到配置的 scoreboard horizon 或发生 failure。主指标是 **H80**：
+模型先看 10 步真实状态 warm-up，然后只使用自己的预测状态递归 rollout，最多评估 990 步。主指标是 **VPT80@0.25**：
 
 ```text
-至少 80% 测试 windows 仍未 fail 的最大预测步数
+至少 80% windows 的 normalized state MSE 仍低于 0.25 时，模型最多能预测到第几步。
 ```
 
-## 1. 为什么是 survival scoreboard？
+## 1. 为什么不用 policy return？
 
-World model 有时用于辅助 policy，但如果只看 policy return，很难判断 world model 是否真的学到了物理规律。这里 MuJoCo 是 ground-truth physics simulator，学生训练的模型是 learned simulator。我们不问它拿多少 reward，而问：
+World model 经常被用于辅助 policy，但 policy return 会把很多问题混在一起：policy 可能避开模型不准的区域，reward 也可能掩盖物理预测误差。本作业把 world model 单独拿出来问：
 
 ```text
-在同一串 action 下，world model 能跟 MuJoCo ground truth 保持一致多少步？
+给定同一串 action，learned world model 能和 MuJoCo ground truth 保持一致多久？
 ```
 
-因此本作业不是固定预测 100 步，而是用 survival curve 看模型“撑到哪里才崩”。普通 Colab 默认轻量；老师或助教可以用 scoreboard 配置跑 500/1000 步。
+这就是论文中 isolated world-model evaluation 思想在课程作业里的简化实现。
 
-## 2. 环境和数据
-
-环境：
-
-```text
-gymnasium.make("InvertedPendulum-v5")
-```
+## 2. 数据格式
 
 状态：
 
@@ -44,47 +38,49 @@ s = [x, theta, x_dot, theta_dot]
 a = [u], u in [-3, 3]
 ```
 
-数据窗口由 config 推导：
+窗口长度由 config 推导：
 
 ```text
-warmup_steps = 5
-max_horizon = configurable
 states:  [N, warmup_steps + max_horizon + 1, 4]
 actions: [N, warmup_steps + max_horizon, 1]
+```
+
+正式 scoreboard 默认：
+
+```text
+warmup_steps = 10
+max_horizon = 990
+states       = [N, 1001, 4]
+actions      = [N, 1000, 1]
 ```
 
 索引规则：
 
 ```text
-warmup: t = 0..4
-current = s_5
+warmup 使用真实 s_0 ... s_9
+current = s_10
 
 h = 1:
-  use a_5
-  predict s_hat_6
-  compare to s_6
+  使用 a_10
+  预测 s_hat_11
+  对比 s_11
 
-h = max_horizon:
-  use a_{warmup + h - 1}
-  predict s_hat_{warmup + h}
-  compare to s_{warmup + h}
+h = 990:
+  使用 a_999
+  预测 s_hat_1000
+  对比 s_1000
 ```
 
-数据由 locked generator 生成。学生不会训练或提交 controller。action sequence 来自固定 stabilizing feedback 加平滑噪声：
+数据由 locked generator 生成。action sequence 来自固定 stabilizing feedback 加平滑噪声：
 
 ```text
 a_t = clip(-K s_t + eps_t, -3, 3)
 eps_t = 0.9 eps_{t-1} + sigma xi_t
 ```
 
-只保留真实 MuJoCo trajectory 在整个 window 内满足：
+学生不会训练或提交 controller。
 
-```text
-abs(theta_true) < 0.20
-all state values finite
-```
-
-## 3. 学生只能修改什么
+## 3. 学生修改范围
 
 允许修改：
 
@@ -101,11 +97,14 @@ configs/student.yaml
 ```text
 wm_hw/env.py
 wm_hw/dataset.py
+wm_hw/official_rollout.py
+wm_hw/official_metrics.py
 wm_hw/eval_horizon.py
-official thresholds
 hidden seeds
 baseline model
 ```
+
+官方评分使用 locked official rollout 和 locked official metrics，不依赖学生的 `student/metrics.py`。
 
 ## 4. 模型接口
 
@@ -126,7 +125,7 @@ class StudentWorldModel(nn.Module):
         """
 ```
 
-模型输出 normalized delta observation。locked helper 会负责：
+模型输出 normalized delta observation。locked helper 会执行：
 
 ```text
 normalize obs/action
@@ -135,9 +134,9 @@ denormalize delta
 next_obs = obs + delta
 ```
 
-## 5. Rollout 实现
+## 5. Rollout
 
-你需要实现或改进：
+学生实现或改进：
 
 ```python
 open_loop_rollout(model, states, actions, normalizer, warmup_steps, horizon)
@@ -147,12 +146,12 @@ open_loop_rollout(model, states, actions, normalizer, warmup_steps, horizon)
 
 ```text
 warmup 阶段可以使用 ground-truth states
-warmup 后不能再偷看 future ground-truth states
+warmup 后不能再使用 future ground-truth states
 ```
 
-也就是说，预测 `s_hat_6` 后，下一步必须用 `s_hat_6` 作为输入，而不是用真实 `s_6`。
+也就是说，预测 `s_hat_11` 后，下一步必须用 `s_hat_11` 作为输入，而不是用真实 `s_11`。
 
-## 6. Loss
+## 6. Loss 和训练成本
 
 默认训练 loss：
 
@@ -160,7 +159,7 @@ warmup 后不能再偷看 future ground-truth states
 L = L_1step + lambda_rollout L_rollout
 ```
 
-默认：
+推荐默认：
 
 ```text
 one_step_weight = 1.0
@@ -168,84 +167,70 @@ rollout_weight = 1.0
 rollout_train_horizon = 15
 ```
 
-训练时只要求 short local rollout stability；scoreboard 可以测试更长 horizon。这个差距正是作业想让你观察的 compounding error。建议报告中比较 `rollout_train_horizon = 1 / 5 / 15 / 30` 对 H80 的影响。
+正式数据窗口可以有 1000 个 action。为了避免 Colab 成本失控，训练不会默认在整段 990-step window 上 backprop。`training.train_sequence_length` 会随机截取短 subwindow；`rollout_train_horizon` 控制短 BPTT rollout loss。最终评估仍然可以跑 990 步。
 
-## 7. Failure Horizon Metric
+## 7. Official Metrics
 
-默认 failure thresholds：
+官方指标是 SmallWorlds-style normalized MSE 和 valid prediction time。
 
-```text
-angle_error_rad = 0.075
-cart_pos_error_m = 0.10
-cart_vel_error_mps = 0.75
-pole_vel_error_radps = 1.00
-consecutive_fail_steps = 2
-```
-
-单步 violation：
+normalized MSE：
 
 ```text
-abs(pred_theta - true_theta) > 0.075
-or abs(pred_x - true_x) > 0.10
-or abs(pred_xdot - true_xdot) > 0.75
-or abs(pred_thetadot - true_thetadot) > 1.00
+nMSE_h = mean(((s_hat_h - s_h) / obs_std_train)^2)
 ```
 
-连续 2 步 violation 才算 fail。每个 window 的 survival horizon：
+报告：
 
 ```text
-如果第 h 步开始连续 violation:
-  survival = h - 1
-
-如果 max_horizon 内没有 fail:
-  survival = max_horizon
+nMSE@1
+nMSE@5
+nMSE@10
+nMSE@90
+nMSE@100
+nMSE@200
+nMSE@500
+nMSE@990
+nMSE_AUC
+VPT80@0.10
+VPT80@0.25   # primary metric
+VPT80@0.50
+VPT50@0.25
 ```
 
-主指标：
+`VPT80@0.25` 的意思是：每个 window 一旦 nMSE 超过 0.25 就视为该 window 不再 valid；看至少 80% windows 仍 valid 的最大 horizon。
 
-```text
-H80
-```
+## 8. Colab 流程
 
-辅助指标：
-
-```text
-H50
-survival_auc
-mean_survival_steps
-median_survival_steps
-success_rate@configured_milestones
-one_step_rmse
-open_loop_rmse@horizon
-```
-
-## 8. Colab 运行流程
-
-安装和测试：
+安装和快速测试：
 
 ```bash
 python -m pip install -r requirements.txt
-pytest -q
+pytest -q -m "not slow"
 ```
 
-生成 public dataset：
+轻量 dev dataset：
 
 ```bash
-python -m wm_hw.dataset --config configs/colab.yaml --output-dir data/public
+python -m wm_hw.dataset --config configs/dev.yaml --output-dir data/dev --smoke
 ```
 
-训练：
+训练 baseline 和 student：
 
 ```bash
-python -m wm_hw.train --config configs/baseline.yaml --model baseline --dataset-dir data/public --output-dir artifacts/baseline
-python -m wm_hw.train --config configs/student.yaml --model student --dataset-dir data/public --output-dir artifacts/student
+python -m wm_hw.train --config configs/baseline.yaml --model baseline --dataset-dir data/dev --output-dir artifacts/baseline --smoke
+python -m wm_hw.train --config configs/student.yaml --model student --dataset-dir data/dev --output-dir artifacts/student --smoke
 ```
 
-评估：
+官方评估：
 
 ```bash
-python -m wm_hw.eval_horizon --checkpoint-dir artifacts/student/best_checkpoint --dataset-dir data/public --split test --horizon auto --output-dir artifacts/student/eval_test
-python -m wm_hw.eval_horizon --checkpoint-dir artifacts/student/best_checkpoint --dataset-dir data/public --split ood --horizon auto --output-dir artifacts/student/eval_ood
+python -m wm_hw.eval_horizon \
+  --checkpoint-dir artifacts/student/best_checkpoint \
+  --dataset-dir data/dev \
+  --split test \
+  --horizon auto \
+  --eval-config configs/official_eval.yaml \
+  --output-dir artifacts/student/eval_test
 ```
 
 画图：
@@ -254,28 +239,20 @@ python -m wm_hw.eval_horizon --checkpoint-dir artifacts/student/best_checkpoint 
 python -m wm_hw.plotting --eval-dir artifacts/student/eval_test --output-dir artifacts/student/plots
 ```
 
-## 9. Scoreboard / Leaderboard
+## 9. Final Scoreboard
 
-轻量配置：
-
-```text
-configs/colab.yaml      max_horizon = 100
-```
-
-长 horizon 配置：
-
-```text
-configs/scoreboard.yaml max_horizon = 1000
-```
-
-老师或助教可以运行：
+正式 public scoreboard：
 
 ```bash
-python -m wm_hw.dataset --config configs/scoreboard.yaml --output-dir data/scoreboard
-python -m wm_hw.eval_horizon --checkpoint-dir artifacts/student/best_checkpoint --dataset-dir data/scoreboard --split test --horizon auto --output-dir artifacts/student/scoreboard_test
+python -m wm_hw.dataset --config configs/public_scoreboard.yaml --output-dir data/public_scoreboard
+python -m wm_hw.eval_horizon \
+  --checkpoint-dir artifacts/student/best_checkpoint \
+  --dataset-dir data/public_scoreboard \
+  --split test \
+  --horizon auto \
+  --eval-config configs/official_eval.yaml \
+  --output-dir artifacts/student/public_scoreboard_test
 ```
-
-如果要改成 500 或 2000 步，只改 `configs/scoreboard.yaml` 的 `max_horizon`，不需要改代码。
 
 ## 10. 提交内容
 
@@ -296,22 +273,20 @@ short_report.pdf
 
 报告最多 4 页，回答：
 
-1. baseline one-step MLP 为什么会在 long-horizon rollout 漂移？
+1. 为什么 one-step prediction 很好也可能 long-horizon drift？
 2. 你的模型结构改了什么？
-3. multi-step rollout loss 对 H80 和 survival curve 有什么影响？
+3. rollout loss 对 nMSE_AUC 和 VPT80@0.25 有什么影响？
 4. OOD split 为什么更难？
-5. 你的模型最早在哪些 state 维度上 fail？
-6. test 和 OOD 的 H80/H50/survival_auc 有什么差异？
+5. 你的模型最早在哪些 state 维度上偏离？
+6. test 和 OOD 的 VPT80@0.25 / nMSE@990 有什么差异？
 
-## 11. 评分
+## 11. 评分建议
 
 ```text
 open-loop rollout correctness: 20
 world model implementation: 20
 multi-step rollout loss: 20
-failure horizon metric: 20
-hidden H80 improvement over baseline: 10
+nMSE/VPT analysis: 20
+hidden VPT80@0.25 improvement over baseline: 10
 reproducibility/artifacts: 10
 ```
-
-官方评分既会看学生提交的 checkpoint，也可能用隐藏数据重新训练或抽查学生代码。

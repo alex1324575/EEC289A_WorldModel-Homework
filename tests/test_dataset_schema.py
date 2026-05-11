@@ -8,7 +8,7 @@ from wm_hw.horizon import dataset_window_spec
 
 
 def test_dataset_split_schema_smoke():
-    cfg = load_config("configs/colab.yaml")
+    cfg = load_config("configs/dev.yaml")
     data = generate_split("train", cfg, smoke=True)
     spec = dataset_window_spec(cfg["dataset"])
     assert data["states"].shape == (cfg["smoke"]["train_windows"], spec["window_states"], 4)
@@ -17,7 +17,8 @@ def test_dataset_split_schema_smoke():
 
 
 def test_dataset_schema_uses_configured_scoreboard_horizon():
-    cfg = deepcopy(load_config("configs/colab.yaml"))
+    cfg = deepcopy(load_config("configs/dev.yaml"))
+    cfg["dataset"]["warmup_steps"] = 5
     cfg["dataset"]["max_horizon"] = 37
     cfg["smoke"]["train_windows"] = 4
     data = generate_split("train", cfg, smoke=True)

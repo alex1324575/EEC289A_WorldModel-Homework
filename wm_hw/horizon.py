@@ -67,12 +67,15 @@ def resolve_eval_horizon(
     warmup = int(warmup_override if warmup_override is not None else cfg.get("eval", {}).get("warmup_steps", 5))
     max_available = available_horizon(states_shape, actions_shape, warmup)
     if horizon_override == "auto":
-        horizon = max_available
+        horizon = min(max_available, int(cfg.get("eval", {}).get("max_horizon", max_available)))
     elif horizon_override is not None:
         horizon = int(horizon_override)
     else:
         config_horizon = cfg.get("eval", {}).get("horizon", "auto")
-        horizon = max_available if config_horizon == "auto" else int(config_horizon)
+        if config_horizon == "auto":
+            horizon = min(max_available, int(cfg.get("eval", {}).get("max_horizon", max_available)))
+        else:
+            horizon = int(config_horizon)
     if horizon <= 0:
         raise ValueError(f"horizon must be positive, got {horizon}.")
     if horizon > max_available:
