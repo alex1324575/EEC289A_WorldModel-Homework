@@ -81,6 +81,13 @@ python -m wm_hw.eval_horizon \
   --horizon auto \
   --eval-config configs/official_eval.yaml \
   --output-dir artifacts/student/eval_test
+python -m wm_hw.eval_horizon \
+  --checkpoint-dir artifacts/student/best_checkpoint \
+  --dataset-dir data/dev \
+  --split ood \
+  --horizon auto \
+  --eval-config configs/official_eval.yaml \
+  --output-dir artifacts/student/eval_ood
 
 python -m wm_hw.plotting --eval-dir artifacts/student/eval_test --output-dir artifacts/student/plots
 ```
