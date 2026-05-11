@@ -8,7 +8,7 @@ model:
 
 training:
   batch_size: 128
-  updates: 1200
+  updates: 200
   smoke_updates: 40
   learning_rate: 1.0e-3
   grad_clip_norm: 10.0
