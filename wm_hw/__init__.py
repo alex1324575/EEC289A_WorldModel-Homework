@@ -1,2 +1,1 @@
-"""InvertedPendulum horizon-to-failure world model homework."""
-
+"""InvertedPendulum VPT scoreboard world model homework."""
