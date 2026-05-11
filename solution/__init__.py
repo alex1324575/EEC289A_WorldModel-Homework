@@ -1,0 +1,2 @@
+"""Staff reference solution."""
+

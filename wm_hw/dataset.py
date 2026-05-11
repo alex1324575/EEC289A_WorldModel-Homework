@@ -1,0 +1,140 @@
+"""Locked dataset generation for InvertedPendulum windows."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+import argparse
+import json
+
+import numpy as np
+from tqdm import tqdm
+
+from .config import load_config
+from .env import ACTION_HIGH, ACTION_LOW, clip_action, make_env, reset_env, step_env
+
+
+SPLITS = ("train", "val", "test", "ood")
+
+
+def sample_ar1_noise(rng: np.random.Generator, steps: int, sigma: float, rho: float = 0.9) -> np.ndarray:
+    noise = np.zeros((steps, 1), dtype=np.float32)
+    cur = np.zeros(1, dtype=np.float32)
+    for t in range(steps):
+        cur = rho * cur + float(sigma) * rng.standard_normal(1).astype(np.float32)
+        noise[t] = cur
+    return noise
+
+
+def fixed_action_generator(obs: np.ndarray, noise: np.ndarray | float, gain: np.ndarray) -> np.ndarray:
+    action = -float(np.dot(gain, obs)) + float(np.asarray(noise).reshape(1)[0])
+    return clip_action(action)
+
+
+def _valid_window(states: np.ndarray, max_abs_angle: float) -> bool:
+    return bool(np.all(np.isfinite(states)) and np.max(np.abs(states[:, 1])) < float(max_abs_angle))
+
+
+def collect_valid_window(env, split_cfg: dict[str, Any], data_cfg: dict[str, Any], filter_cfg: dict[str, Any], rng: np.random.Generator):
+    steps = int(data_cfg["window_actions"])
+    gain = np.asarray(data_cfg["lqr_gain"], dtype=np.float32)
+    rho = float(data_cfg.get("ar1_rho", 0.9))
+    max_abs_angle = float(filter_cfg["max_abs_true_angle"])
+    noise = sample_ar1_noise(rng, steps, float(split_cfg["action_noise_sigma"]), rho=rho)
+    obs = reset_env(env, seed=int(rng.integers(0, 2**31 - 1)))
+    states = [obs]
+    actions = []
+    for t in range(steps):
+        action = fixed_action_generator(obs, noise[t], gain)
+        obs, done = step_env(env, action)
+        states.append(obs)
+        actions.append(action)
+        if done:
+            break
+    if len(states) != steps + 1:
+        return None
+    states_arr = np.asarray(states, dtype=np.float32)
+    actions_arr = np.asarray(actions, dtype=np.float32)
+    if not _valid_window(states_arr, max_abs_angle):
+        return None
+    return states_arr, actions_arr
+
+
+def generate_split(name: str, cfg: dict[str, Any], *, smoke: bool = False) -> dict[str, np.ndarray]:
+    split_cfg = dict(cfg["splits"][name])
+    if smoke:
+        split_cfg["windows"] = int(cfg["smoke"][f"{name}_windows"])
+    rng = np.random.default_rng(int(cfg["seed"]) + 997 * (SPLITS.index(name) + 1))
+    env = make_env(reset_noise_scale=float(split_cfg["reset_noise_scale"]))
+    windows = int(split_cfg["windows"])
+    max_attempts = windows * int(cfg["filter"].get("max_attempts_multiplier", 80))
+    states = []
+    actions = []
+    attempts = 0
+    with tqdm(total=windows, desc=f"generate {name}", leave=False) as pbar:
+        while len(states) < windows and attempts < max_attempts:
+            attempts += 1
+            item = collect_valid_window(env, split_cfg, cfg["dataset"], cfg["filter"], rng)
+            if item is None:
+                continue
+            s, a = item
+            states.append(s)
+            actions.append(a)
+            pbar.update(1)
+    env.close()
+    if len(states) < windows:
+        raise RuntimeError(f"Only collected {len(states)}/{windows} valid {name} windows after {attempts} attempts.")
+    return {
+        "states": np.asarray(states, dtype=np.float32),
+        "actions": np.asarray(actions, dtype=np.float32),
+    }
+
+
+def save_split(output_dir: Path, split: str, data: dict[str, np.ndarray]) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / f"{split}.npz"
+    np.savez_compressed(path, **data)
+    return path
+
+
+def load_split(dataset_dir: str | Path, split: str) -> dict[str, np.ndarray]:
+    path = Path(dataset_dir) / f"{split}.npz"
+    if not path.exists():
+        raise FileNotFoundError(path)
+    with np.load(path) as data:
+        return {key: data[key] for key in data.files}
+
+
+def generate_dataset(config_path: str | Path, output_dir: str | Path, *, smoke: bool = False) -> dict[str, Any]:
+    cfg = load_config(config_path)
+    output_dir = Path(output_dir)
+    written = {}
+    summaries = {}
+    for split in SPLITS:
+        data = generate_split(split, cfg, smoke=smoke)
+        written[split] = str(save_split(output_dir, split, data))
+        summaries[split] = {key: list(value.shape) for key, value in data.items()}
+    metadata = {
+        "env_id": cfg["env"]["id"],
+        "smoke": smoke,
+        "window_states": int(cfg["dataset"]["window_states"]),
+        "window_actions": int(cfg["dataset"]["window_actions"]),
+        "action_range": [ACTION_LOW, ACTION_HIGH],
+        "splits": summaries,
+    }
+    with (output_dir / "metadata.json").open("w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=2)
+    return {"output_dir": str(output_dir), "written": written, "metadata": metadata}
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="configs/colab.yaml")
+    parser.add_argument("--output-dir", default="data/public")
+    parser.add_argument("--smoke", action="store_true")
+    args = parser.parse_args()
+    print(json.dumps(generate_dataset(args.config, args.output_dir, smoke=args.smoke), indent=2))
+
+
+if __name__ == "__main__":
+    main()

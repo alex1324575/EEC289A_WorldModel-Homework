@@ -5,6 +5,6 @@ __pycache__/
 .venv/
 .venv_colab/
 .venv_gpu/
-configs/colab_runtime_config.json
 artifacts/
+data/
 *.egg-info/

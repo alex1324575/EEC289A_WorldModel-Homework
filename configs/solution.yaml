@@ -1,23 +1,34 @@
-seed: 13
-force_cpu: false
+seed: 289
+device: auto
+torch_num_threads: 1
 
 model:
   hidden_dim: 192
-  task_embedding_dim: 32
-
-loss:
-  warmup: 10
-  one_step_weight: 1.0
-  rollout_weight: 0.3
-  rollout_train_horizon: 15
-  physics_weight: 0.01
+  num_layers: 2
+  use_gru: false
 
 training:
-  learning_rate: 0.0008
-  updates: 600
-  updates_smoke: 20
-  batch_size: 64
-  batch_size_smoke: 8
-  eval_batch_size: 64
-  eval_every: 20
-  grad_clip: 100.0
+  batch_size: 128
+  updates: 2400
+  smoke_updates: 160
+  learning_rate: 8.0e-4
+  grad_clip_norm: 10.0
+  eval_every: 200
+  smoke_eval_every: 20
+  checkpoint_metric: val/H80
+
+loss:
+  one_step_weight: 1.0
+  rollout_weight: 1.0
+  rollout_train_horizon: 15
+
+eval:
+  warmup_steps: 5
+  horizon: 100
+
+failure:
+  angle_error_rad: 0.075
+  cart_pos_error_m: 0.10
+  cart_vel_error_mps: 0.75
+  pole_vel_error_radps: 1.00
+  consecutive_fail_steps: 2
