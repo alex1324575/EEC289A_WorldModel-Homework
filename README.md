@@ -16,6 +16,21 @@ s_hat[t+1] = f_theta(s_hat[t], a[t])
 You are given a runnable starter implementation. Your goal is to improve its
 long-horizon open-loop prediction performance.
 
+## How You Will Run It
+
+The official student workflow is through Colab:
+
+```text
+notebooks/homework_colab.ipynb
+```
+
+The notebook handles setup, dependency installation, MuJoCo data generation,
+starter training, official evaluation, plotting, and artifact packaging.
+
+You should not need to type the Python commands manually during normal use. The
+CLI commands near the end of this README are only a local/debugging reference
+for students who want to reproduce the notebook outside Colab.
+
 ## Setup
 
 The environment is:
@@ -166,97 +181,33 @@ how OOD noise changes the result
 which model or loss changes helped most
 ```
 
-## Quick Start
+## Colab Workflow
 
-Install dependencies:
+Open `notebooks/homework_colab.ipynb` and run it from top to bottom.
 
-```bash
-python -m pip install -r requirements.txt
+Use this flow:
+
+```text
+1. Set COURSE_REPO_URL to your fork.
+2. Keep SMOKE_RUN = True for your first run.
+3. Run setup, tests, dev data generation, starter training, eval, and plots.
+4. Modify only the allowed student files.
+5. Re-run the notebook cells to compare VPT/nMSE results.
+6. For final artifacts, set SMOKE_RUN = False and RUN_SCOREBOARD_DEMO = True.
 ```
 
-Run fast tests:
+The lightweight Colab path uses `configs/dev.yaml`. The final public scoreboard
+cell uses `configs/public_scoreboard.yaml`, which evaluates 10 warm-up steps
+plus 990 open-loop prediction steps.
 
-```bash
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -q -m "not slow"
-```
+The notebook automatically creates the key artifacts:
 
-Generate a lightweight dev dataset:
-
-```bash
-python -m wm_hw.dataset \
-  --config configs/dev.yaml \
-  --output-dir data/dev \
-  --smoke
-```
-
-Train the starter model:
-
-```bash
-python -m wm_hw.train \
-  --config configs/student.yaml \
-  --model student \
-  --dataset-dir data/dev \
-  --output-dir artifacts/student \
-  --smoke
-```
-
-Evaluate test and OOD splits:
-
-```bash
-python -m wm_hw.eval_horizon \
-  --checkpoint-dir artifacts/student/best_checkpoint \
-  --dataset-dir data/dev \
-  --split test \
-  --horizon auto \
-  --eval-config configs/official_eval.yaml \
-  --output-dir artifacts/student/eval_test
-
-python -m wm_hw.eval_horizon \
-  --checkpoint-dir artifacts/student/best_checkpoint \
-  --dataset-dir data/dev \
-  --split ood \
-  --horizon auto \
-  --eval-config configs/official_eval.yaml \
-  --output-dir artifacts/student/eval_ood
-```
-
-Plot diagnostics:
-
-```bash
-python -m wm_hw.plotting \
-  --eval-dir artifacts/student/eval_test \
-  --output-dir artifacts/student/plots
-```
-
-## Final Public Scoreboard
-
-After your implementation is stable, generate the long-horizon public
-scoreboard dataset:
-
-```bash
-python -m wm_hw.dataset \
-  --config configs/public_scoreboard.yaml \
-  --output-dir data/public_scoreboard
-```
-
-Then evaluate your trained checkpoint:
-
-```bash
-python -m wm_hw.eval_horizon \
-  --checkpoint-dir artifacts/student/best_checkpoint \
-  --dataset-dir data/public_scoreboard \
-  --split test \
-  --horizon auto \
-  --eval-config configs/official_eval.yaml \
-  --output-dir artifacts/student/public_scoreboard_test
-```
-
-Plot final diagnostics:
-
-```bash
-python -m wm_hw.plotting \
-  --eval-dir artifacts/student/public_scoreboard_test \
-  --output-dir artifacts/student/public_scoreboard_plots
+```text
+artifacts/student/best_checkpoint/
+artifacts/student/eval_test/metrics.json
+artifacts/student/eval_ood/metrics.json
+artifacts/student/plots/
+artifacts/student/final_artifacts.zip
 ```
 
 ## Deliverables
@@ -295,3 +246,19 @@ how OOD noise changed the error curve
 
 Team size and deadline will follow the course announcement. If working in a
 team, clearly state each member's contribution in the report.
+
+## Optional Local Reference
+
+These commands are the local equivalent of the Colab cells. They are provided
+for debugging only; the expected student workflow is still the notebook.
+
+```bash
+python -m pip install -r requirements.txt
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest -q -m "not slow"
+
+python -m wm_hw.dataset --config configs/dev.yaml --output-dir data/dev --smoke
+python -m wm_hw.train --config configs/student.yaml --model student --dataset-dir data/dev --output-dir artifacts/student --smoke
+python -m wm_hw.eval_horizon --checkpoint-dir artifacts/student/best_checkpoint --dataset-dir data/dev --split test --horizon auto --eval-config configs/official_eval.yaml --output-dir artifacts/student/eval_test
+python -m wm_hw.eval_horizon --checkpoint-dir artifacts/student/best_checkpoint --dataset-dir data/dev --split ood --horizon auto --eval-config configs/official_eval.yaml --output-dir artifacts/student/eval_ood
+python -m wm_hw.plotting --eval-dir artifacts/student/eval_test --output-dir artifacts/student/plots
+```
