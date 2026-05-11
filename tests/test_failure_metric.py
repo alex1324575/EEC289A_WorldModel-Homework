@@ -15,15 +15,18 @@ TH = {
 
 
 def test_perfect_prediction_survives_full_horizon():
-    pred = torch.zeros(3, 100, 4)
+    horizon = 37
+    pred = torch.zeros(3, horizon, 4)
     target = torch.zeros_like(pred)
-    survival, metrics = compute_failure_horizon(pred, target, TH)
-    assert survival.tolist() == [100, 100, 100]
-    assert metrics["H80"] == 100
+    survival, metrics = compute_failure_horizon(pred, target, TH, milestones=[5, 10, 25])
+    assert survival.tolist() == [horizon, horizon, horizon]
+    assert metrics["H80"] == horizon
+    assert metrics["success_rate@37"] == 1.0
+    assert metrics["survival_auc"] == 1.0
 
 
 def test_two_consecutive_angle_violations_fail():
-    pred = torch.zeros(1, 100, 4)
+    pred = torch.zeros(1, 37, 4)
     target = torch.zeros_like(pred)
     pred[0, 9:11, 1] = 0.2
     survival, metrics = compute_failure_horizon(pred, target, TH)
@@ -32,8 +35,8 @@ def test_two_consecutive_angle_violations_fail():
 
 
 def test_single_step_violation_does_not_fail():
-    pred = torch.zeros(1, 100, 4)
+    pred = torch.zeros(1, 37, 4)
     target = torch.zeros_like(pred)
     pred[0, 9, 1] = 0.2
     survival, _ = compute_failure_horizon(pred, target, TH)
-    assert survival.item() == 100
+    assert survival.item() == 37

@@ -1,6 +1,6 @@
-# 作业：InvertedPendulum Horizon-to-Failure World Model
+# 作业：InvertedPendulum Survival Scoreboard World Model
 
-本作业只训练 **world model**，不训练 policy，不使用 reward，不实现 actor/critic，也不维护 10 个 MuJoCo 任务。环境固定为 Gymnasium 官方 `InvertedPendulum-v5`。
+本作业只训练 **world model**，不训练 policy，不使用 reward，不实现 actor/critic，也不维护自定义 MuJoCo XML。环境固定为 Gymnasium 官方 `InvertedPendulum-v5`。
 
 核心问题：
 
@@ -8,23 +8,21 @@
 s_hat[t+1] = f_theta(s_hat[t], a[t])
 ```
 
-给定 MuJoCo 真实 state/action trajectory，模型先看前 5 步真实状态作为 warm-up，然后从 `s_5` 开始只使用自己的预测状态递归 rollout 100 步。主指标是 **H80**：
+给定 MuJoCo 真实 state/action trajectory，模型先看一小段真实状态作为 warm-up，然后只使用自己的预测状态递归 rollout，直到达到配置的 scoreboard horizon 或发生 failure。主指标是 **H80**：
 
 ```text
 至少 80% 测试 windows 仍未 fail 的最大预测步数
 ```
 
-## 1. 为什么这样评测 world model？
+## 1. 为什么是 survival scoreboard？
 
-World model 有时用于辅助 policy，但如果只看 policy return，很难判断 world model 是否真的学到了物理规律。这里 MuJoCo 是 ground-truth physics simulator，学生训练的模型是 learned simulator。我们比较：
+World model 有时用于辅助 policy，但如果只看 policy return，很难判断 world model 是否真的学到了物理规律。这里 MuJoCo 是 ground-truth physics simulator，学生训练的模型是 learned simulator。我们不问它拿多少 reward，而问：
 
 ```text
-MuJoCo true trajectory
-vs
-world model predicted trajectory
+在同一串 action 下，world model 能跟 MuJoCo ground truth 保持一致多少步？
 ```
 
-如果模型在 100-step open-loop prediction 中很快偏离 MuJoCo ground truth，说明它虽然可能 one-step loss 很低，但长期动力学不稳定。
+因此本作业不是固定预测 100 步，而是用 survival curve 看模型“撑到哪里才崩”。普通 Colab 默认轻量；老师或助教可以用 scoreboard 配置跑 500/1000 步。
 
 ## 2. 环境和数据
 
@@ -46,11 +44,13 @@ s = [x, theta, x_dot, theta_dot]
 a = [u], u in [-3, 3]
 ```
 
-每个 evaluation window：
+数据窗口由 config 推导：
 
 ```text
-states:  [N, 106, 4]
-actions: [N, 105, 1]
+warmup_steps = 5
+max_horizon = configurable
+states:  [N, warmup_steps + max_horizon + 1, 4]
+actions: [N, warmup_steps + max_horizon, 1]
 ```
 
 索引规则：
@@ -64,10 +64,10 @@ h = 1:
   predict s_hat_6
   compare to s_6
 
-h = 100:
-  use a_104
-  predict s_hat_105
-  compare to s_105
+h = max_horizon:
+  use a_{warmup + h - 1}
+  predict s_hat_{warmup + h}
+  compare to s_{warmup + h}
 ```
 
 数据由 locked generator 生成。学生不会训练或提交 controller。action sequence 来自固定 stabilizing feedback 加平滑噪声：
@@ -168,7 +168,7 @@ rollout_weight = 1.0
 rollout_train_horizon = 15
 ```
 
-训练时只要求 short local rollout stability；评估时测试 100-step horizon。这个差距正是作业想让你观察的 compounding error。建议报告中比较 `rollout_train_horizon = 1 / 5 / 15` 对 H80 的影响。
+训练时只要求 short local rollout stability；scoreboard 可以测试更长 horizon。这个差距正是作业想让你观察的 compounding error。建议报告中比较 `rollout_train_horizon = 1 / 5 / 15 / 30` 对 H80 的影响。
 
 ## 7. Failure Horizon Metric
 
@@ -197,8 +197,8 @@ or abs(pred_thetadot - true_thetadot) > 1.00
 如果第 h 步开始连续 violation:
   survival = h - 1
 
-如果 100 步内没有 fail:
-  survival = 100
+如果 max_horizon 内没有 fail:
+  survival = max_horizon
 ```
 
 主指标：
@@ -211,24 +211,20 @@ H80
 
 ```text
 H50
+survival_auc
 mean_survival_steps
 median_survival_steps
-success_rate@5/@10/@25/@50/@100
+success_rate@configured_milestones
 one_step_rmse
-open_loop_rmse@100
+open_loop_rmse@horizon
 ```
 
 ## 8. Colab 运行流程
 
-安装：
+安装和测试：
 
 ```bash
 python -m pip install -r requirements.txt
-```
-
-测试：
-
-```bash
 pytest -q
 ```
 
@@ -238,23 +234,18 @@ pytest -q
 python -m wm_hw.dataset --config configs/colab.yaml --output-dir data/public
 ```
 
-训练 baseline：
+训练：
 
 ```bash
 python -m wm_hw.train --config configs/baseline.yaml --model baseline --dataset-dir data/public --output-dir artifacts/baseline
-```
-
-训练 student：
-
-```bash
 python -m wm_hw.train --config configs/student.yaml --model student --dataset-dir data/public --output-dir artifacts/student
 ```
 
 评估：
 
 ```bash
-python -m wm_hw.eval_horizon --checkpoint-dir artifacts/student/best_checkpoint --dataset-dir data/public --split test --output-dir artifacts/student/eval_test
-python -m wm_hw.eval_horizon --checkpoint-dir artifacts/student/best_checkpoint --dataset-dir data/public --split ood --output-dir artifacts/student/eval_ood
+python -m wm_hw.eval_horizon --checkpoint-dir artifacts/student/best_checkpoint --dataset-dir data/public --split test --horizon auto --output-dir artifacts/student/eval_test
+python -m wm_hw.eval_horizon --checkpoint-dir artifacts/student/best_checkpoint --dataset-dir data/public --split ood --horizon auto --output-dir artifacts/student/eval_ood
 ```
 
 画图：
@@ -263,7 +254,30 @@ python -m wm_hw.eval_horizon --checkpoint-dir artifacts/student/best_checkpoint 
 python -m wm_hw.plotting --eval-dir artifacts/student/eval_test --output-dir artifacts/student/plots
 ```
 
-## 9. 提交内容
+## 9. Scoreboard / Leaderboard
+
+轻量配置：
+
+```text
+configs/colab.yaml      max_horizon = 100
+```
+
+长 horizon 配置：
+
+```text
+configs/scoreboard.yaml max_horizon = 1000
+```
+
+老师或助教可以运行：
+
+```bash
+python -m wm_hw.dataset --config configs/scoreboard.yaml --output-dir data/scoreboard
+python -m wm_hw.eval_horizon --checkpoint-dir artifacts/student/best_checkpoint --dataset-dir data/scoreboard --split test --horizon auto --output-dir artifacts/student/scoreboard_test
+```
+
+如果要改成 500 或 2000 步，只改 `configs/scoreboard.yaml` 的 `max_horizon`，不需要改代码。
+
+## 10. 提交内容
 
 ```text
 student/model.py
@@ -284,12 +298,12 @@ short_report.pdf
 
 1. baseline one-step MLP 为什么会在 long-horizon rollout 漂移？
 2. 你的模型结构改了什么？
-3. multi-step rollout loss 对 H80 有什么影响？
+3. multi-step rollout loss 对 H80 和 survival curve 有什么影响？
 4. OOD split 为什么更难？
 5. 你的模型最早在哪些 state 维度上 fail？
-6. test 和 OOD 的 H80/H50/success rate 有什么差异？
+6. test 和 OOD 的 H80/H50/survival_auc 有什么差异？
 
-## 10. 评分
+## 11. 评分
 
 ```text
 open-loop rollout correctness: 20

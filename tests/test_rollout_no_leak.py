@@ -17,8 +17,10 @@ class ActionOnlyModel(torch.nn.Module):
 
 
 def test_rollout_does_not_use_future_states():
-    states = torch.zeros(2, 106, 4)
-    actions = torch.ones(2, 105, 1) * 0.1
+    warmup = 5
+    horizon = 3
+    states = torch.zeros(2, warmup + horizon + 1, 4)
+    actions = torch.ones(2, warmup + horizon, 1) * 0.1
     states[:, 6:] = 999.0
     norm = Normalizer(
         obs_mean=np.zeros(4, dtype=np.float32),
@@ -28,6 +30,6 @@ def test_rollout_does_not_use_future_states():
         delta_mean=np.zeros(4, dtype=np.float32),
         delta_std=np.ones(4, dtype=np.float32),
     )
-    preds = open_loop_rollout(ActionOnlyModel(), states, actions, norm, warmup_steps=5, horizon=3)
-    assert preds.shape == (2, 3, 4)
+    preds = open_loop_rollout(ActionOnlyModel(), states, actions, norm, warmup_steps=warmup, horizon=horizon)
+    assert preds.shape == (2, horizon, 4)
     assert torch.all(preds[..., 0] < 1.0)

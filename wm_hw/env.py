@@ -13,8 +13,11 @@ ACTION_LOW = -3.0
 ACTION_HIGH = 3.0
 
 
-def make_env(seed: int | None = None, reset_noise_scale: float = 0.01):
-    env = gym.make(ENV_ID, reset_noise_scale=float(reset_noise_scale))
+def make_env(seed: int | None = None, reset_noise_scale: float = 0.01, max_episode_steps: int | None = None):
+    kwargs = {"reset_noise_scale": float(reset_noise_scale)}
+    if max_episode_steps is not None:
+        kwargs["max_episode_steps"] = int(max_episode_steps)
+    env = gym.make(ENV_ID, **kwargs)
     if seed is not None:
         env.reset(seed=int(seed))
         env.action_space.seed(int(seed))

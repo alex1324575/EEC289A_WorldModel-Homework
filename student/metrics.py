@@ -5,6 +5,8 @@ from __future__ import annotations
 import numpy as np
 import torch
 
+from wm_hw.horizon import resolve_milestones
+
 
 def _threshold_value(thresholds, key: str) -> float:
     if isinstance(thresholds, dict):
@@ -12,7 +14,7 @@ def _threshold_value(thresholds, key: str) -> float:
     return float(getattr(thresholds, key))
 
 
-def compute_failure_horizon(preds, targets, thresholds):
+def compute_failure_horizon(preds, targets, thresholds, milestones=None):
     """Compute per-window survival and aggregate H80/H50 metrics."""
     pred_t = torch.as_tensor(preds, dtype=torch.float32)
     target_t = torch.as_tensor(targets, dtype=torch.float32)
@@ -40,12 +42,14 @@ def compute_failure_horizon(preds, targets, thresholds):
         ok = [i + 1 for i, rate in enumerate(rates) if rate >= percent]
         return int(max(ok) if ok else 0)
 
+    survival_rates = np.asarray([(surv_np >= h).mean() for h in range(1, horizon + 1)], dtype=np.float32)
     metrics = {
         "H80": h_percent(0.80),
         "H50": h_percent(0.50),
         "mean_survival_steps": float(np.mean(surv_np)),
         "median_survival_steps": float(np.median(surv_np)),
+        "survival_auc": float(np.mean(survival_rates)),
     }
-    for h in [5, 10, 25, 50, 100]:
-        metrics[f"success_rate@{h}"] = float(np.mean(surv_np >= min(h, horizon)))
+    for h in resolve_milestones(milestones, horizon):
+        metrics[f"success_rate@{h}"] = float(np.mean(surv_np >= h))
     return survival, metrics

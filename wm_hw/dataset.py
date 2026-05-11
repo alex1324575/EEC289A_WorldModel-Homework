@@ -12,6 +12,7 @@ from tqdm import tqdm
 
 from .config import load_config
 from .env import ACTION_HIGH, ACTION_LOW, clip_action, make_env, reset_env, step_env
+from .horizon import dataset_window_spec
 
 
 SPLITS = ("train", "val", "test", "ood")
@@ -36,7 +37,7 @@ def _valid_window(states: np.ndarray, max_abs_angle: float) -> bool:
 
 
 def collect_valid_window(env, split_cfg: dict[str, Any], data_cfg: dict[str, Any], filter_cfg: dict[str, Any], rng: np.random.Generator):
-    steps = int(data_cfg["window_actions"])
+    steps = int(dataset_window_spec(data_cfg)["window_actions"])
     gain = np.asarray(data_cfg["lqr_gain"], dtype=np.float32)
     rho = float(data_cfg.get("ar1_rho", 0.9))
     max_abs_angle = float(filter_cfg["max_abs_true_angle"])
@@ -62,10 +63,11 @@ def collect_valid_window(env, split_cfg: dict[str, Any], data_cfg: dict[str, Any
 
 def generate_split(name: str, cfg: dict[str, Any], *, smoke: bool = False) -> dict[str, np.ndarray]:
     split_cfg = dict(cfg["splits"][name])
+    spec = dataset_window_spec(cfg["dataset"])
     if smoke:
         split_cfg["windows"] = int(cfg["smoke"][f"{name}_windows"])
     rng = np.random.default_rng(int(cfg["seed"]) + 997 * (SPLITS.index(name) + 1))
-    env = make_env(reset_noise_scale=float(split_cfg["reset_noise_scale"]))
+    env = make_env(reset_noise_scale=float(split_cfg["reset_noise_scale"]), max_episode_steps=spec["window_actions"])
     windows = int(split_cfg["windows"])
     max_attempts = windows * int(cfg["filter"].get("max_attempts_multiplier", 80))
     states = []
@@ -107,6 +109,7 @@ def load_split(dataset_dir: str | Path, split: str) -> dict[str, np.ndarray]:
 
 def generate_dataset(config_path: str | Path, output_dir: str | Path, *, smoke: bool = False) -> dict[str, Any]:
     cfg = load_config(config_path)
+    spec = dataset_window_spec(cfg["dataset"])
     output_dir = Path(output_dir)
     written = {}
     summaries = {}
@@ -117,8 +120,10 @@ def generate_dataset(config_path: str | Path, output_dir: str | Path, *, smoke: 
     metadata = {
         "env_id": cfg["env"]["id"],
         "smoke": smoke,
-        "window_states": int(cfg["dataset"]["window_states"]),
-        "window_actions": int(cfg["dataset"]["window_actions"]),
+        "warmup_steps": spec["warmup_steps"],
+        "max_horizon": spec["max_horizon"],
+        "window_states": spec["window_states"],
+        "window_actions": spec["window_actions"],
         "action_range": [ACTION_LOW, ACTION_HIGH],
         "splits": summaries,
     }

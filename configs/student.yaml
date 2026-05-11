@@ -25,6 +25,7 @@ loss:
 eval:
   warmup_steps: 5
   horizon: 100
+  milestones: [5, 10, 25, 50, 100]
 
 failure:
   angle_error_rad: 0.075
