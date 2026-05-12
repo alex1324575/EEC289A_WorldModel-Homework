@@ -29,6 +29,6 @@ loss:
 eval:
   warmup_steps: 10
   horizon: auto
-  max_horizon: 990
-  report_horizons: [1, 5, 10, 90, 100, 200, 500, 990]
+  max_horizon: 1000
+  report_horizons: [1, 5, 10, 90, 100, 200, 500, 1000]
   vpt_thresholds: [0.10, 0.25, 0.50]

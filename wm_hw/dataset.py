@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 import argparse
+import hashlib
 import json
 
 import numpy as np
@@ -13,9 +14,6 @@ from tqdm import tqdm
 from .config import load_config
 from .env import ACTION_HIGH, ACTION_LOW, clip_action, make_env, reset_env, step_env
 from .horizon import dataset_window_spec
-
-
-SPLITS = ("train", "val", "test", "ood")
 
 
 def sample_ar1_noise(rng: np.random.Generator, steps: int, sigma: float, rho: float = 0.9) -> np.ndarray:
@@ -61,12 +59,33 @@ def collect_valid_window(env, split_cfg: dict[str, Any], data_cfg: dict[str, Any
     return states_arr, actions_arr
 
 
+def split_seed(base_seed: int, split: str) -> int:
+    digest = hashlib.sha256(f"{int(base_seed)}:{split}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:4], "little") & 0x7FFFFFFF
+
+
+def _smoke_windows(split: str, cfg: dict[str, Any], default_windows: int) -> int:
+    smoke_cfg = cfg.get("smoke", {})
+    exact = f"{split}_windows"
+    if exact in smoke_cfg:
+        return int(smoke_cfg[exact])
+    if "ood" in split and "ood_windows" in smoke_cfg:
+        return int(smoke_cfg["ood_windows"])
+    if "test" in split and "test_windows" in smoke_cfg:
+        return int(smoke_cfg["test_windows"])
+    if "val" in split and "val_windows" in smoke_cfg:
+        return int(smoke_cfg["val_windows"])
+    if "train_windows" in smoke_cfg:
+        return int(smoke_cfg["train_windows"])
+    return int(default_windows)
+
+
 def generate_split(name: str, cfg: dict[str, Any], *, smoke: bool = False) -> dict[str, np.ndarray]:
     split_cfg = dict(cfg["splits"][name])
     spec = dataset_window_spec(cfg["dataset"])
     if smoke:
-        split_cfg["windows"] = int(cfg["smoke"][f"{name}_windows"])
-    rng = np.random.default_rng(int(cfg["seed"]) + 997 * (SPLITS.index(name) + 1))
+        split_cfg["windows"] = _smoke_windows(name, cfg, int(split_cfg["windows"]))
+    rng = np.random.default_rng(split_seed(int(cfg["seed"]), name))
     env = make_env(reset_noise_scale=float(split_cfg["reset_noise_scale"]), max_episode_steps=spec["window_actions"])
     windows = int(split_cfg["windows"])
     max_attempts = windows * int(cfg["filter"].get("max_attempts_multiplier", 80))
@@ -129,18 +148,59 @@ def validate_split_against_metadata(data: dict[str, np.ndarray], metadata: dict[
         raise ValueError("actions time dimension does not match metadata window_actions.")
 
 
-def generate_dataset(config_path: str | Path, output_dir: str | Path, *, smoke: bool = False) -> dict[str, Any]:
+def _parse_splits(requested: str | list[str] | tuple[str, ...] | None, cfg: dict[str, Any]) -> list[str]:
+    if requested is None:
+        names = list(cfg["splits"].keys())
+    elif isinstance(requested, str):
+        names = [part.strip() for part in requested.split(",") if part.strip()]
+    else:
+        names = [str(part) for part in requested]
+    missing = [name for name in names if name not in cfg["splits"]]
+    if missing:
+        raise KeyError(f"Requested split(s) not found in config: {missing}. Available: {sorted(cfg['splits'])}")
+    return names
+
+
+def _data_signature(data: dict[str, np.ndarray]) -> str:
+    sha = hashlib.sha256()
+    for key in sorted(data):
+        arr = np.ascontiguousarray(data[key])
+        sha.update(key.encode("utf-8"))
+        sha.update(str(arr.shape).encode("utf-8"))
+        sha.update(arr.view(np.uint8))
+    return sha.hexdigest()
+
+
+def _dataset_signature(split_signatures: dict[str, str]) -> str:
+    sha = hashlib.sha256()
+    for split in sorted(split_signatures):
+        sha.update(split.encode("utf-8"))
+        sha.update(split_signatures[split].encode("utf-8"))
+    return sha.hexdigest()
+
+
+def generate_dataset(config_path: str | Path, output_dir: str | Path, *, smoke: bool = False, splits: str | list[str] | tuple[str, ...] | None = None) -> dict[str, Any]:
     cfg = load_config(config_path)
     spec = dataset_window_spec(cfg["dataset"])
+    split_names = _parse_splits(splits, cfg)
     output_dir = Path(output_dir)
     written = {}
     summaries = {}
-    for split in SPLITS:
+    split_configs = {}
+    split_signatures = {}
+    for split in split_names:
         data = generate_split(split, cfg, smoke=smoke)
         written[split] = str(save_split(output_dir, split, data))
         summaries[split] = {key: list(value.shape) for key, value in data.items()}
+        split_cfg = dict(cfg["splits"][split])
+        if smoke:
+            split_cfg["windows"] = _smoke_windows(split, cfg, int(split_cfg["windows"]))
+        split_cfg["seed"] = split_seed(int(cfg["seed"]), split)
+        split_configs[split] = split_cfg
+        split_signatures[split] = _data_signature(data)
     metadata = {
         "env_id": cfg["env"]["id"],
+        "seed": int(cfg["seed"]),
         "smoke": smoke,
         "warmup_steps": spec["warmup_steps"],
         "max_horizon": spec["max_horizon"],
@@ -148,6 +208,9 @@ def generate_dataset(config_path: str | Path, output_dir: str | Path, *, smoke: 
         "window_actions": spec["window_actions"],
         "action_range": [ACTION_LOW, ACTION_HIGH],
         "splits": summaries,
+        "split_configs": split_configs,
+        "split_signatures": split_signatures,
+        "data_signature": _dataset_signature(split_signatures),
     }
     with (output_dir / "metadata.json").open("w", encoding="utf-8") as f:
         json.dump(metadata, f, indent=2)
@@ -158,9 +221,10 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/dev.yaml")
     parser.add_argument("--output-dir", default="data/public")
+    parser.add_argument("--splits", default=None, help="Comma-separated split names. Defaults to all splits in the config.")
     parser.add_argument("--smoke", action="store_true")
     args = parser.parse_args()
-    print(json.dumps(generate_dataset(args.config, args.output_dir, smoke=args.smoke), indent=2))
+    print(json.dumps(generate_dataset(args.config, args.output_dir, smoke=args.smoke, splits=args.splits), indent=2))
 
 
 if __name__ == "__main__":

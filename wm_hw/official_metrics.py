@@ -8,7 +8,7 @@ import numpy as np
 import torch
 
 
-DEFAULT_REPORT_HORIZONS = (1, 5, 10, 90, 100, 200, 500, 990)
+DEFAULT_REPORT_HORIZONS = (1, 5, 10, 90, 100, 200, 500, 1000)
 DEFAULT_VPT_THRESHOLDS = (0.10, 0.25, 0.50)
 
 
@@ -21,12 +21,14 @@ def _as_list(values: Iterable[int | float] | str | None, *, cast):
 
 
 def normalized_mse_curve(preds: torch.Tensor, targets: torch.Tensor, obs_std: np.ndarray) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return per-window/per-step nMSE and horizon-mean nMSE curve."""
+    """Return per-window/per-step nMSE and rollout-average nMSE curve."""
     pred_t = torch.as_tensor(preds, dtype=torch.float32)
     target_t = torch.as_tensor(targets, dtype=torch.float32, device=pred_t.device)
     std_t = torch.as_tensor(obs_std, dtype=pred_t.dtype, device=pred_t.device).clamp_min(1e-6)
     per_window_step = torch.mean(((pred_t - target_t) / std_t) ** 2, dim=-1)
-    curve = torch.mean(per_window_step, dim=0)
+    steps = torch.arange(1, per_window_step.shape[1] + 1, dtype=per_window_step.dtype, device=per_window_step.device)
+    per_window_rollout_mean = torch.cumsum(per_window_step, dim=1) / steps
+    curve = torch.mean(per_window_rollout_mean, dim=0)
     return per_window_step, curve
 
 
@@ -54,6 +56,7 @@ def compute_official_metrics(
 ) -> dict[str, Any]:
     """Compute nMSE curve, AUC, and VPT scoreboard metrics."""
     per_window_step, curve = normalized_mse_curve(preds, targets, normalizer.obs_std)
+    step_curve = torch.mean(per_window_step, dim=0)
     horizon = int(curve.shape[0])
     requested_horizons = _as_list(report_horizons, cast=int) or list(DEFAULT_REPORT_HORIZONS)
     requested_horizons = sorted({h for h in requested_horizons if 1 <= h <= horizon})
@@ -68,9 +71,11 @@ def compute_official_metrics(
         "max_horizon": horizon,
         "nMSE_AUC": float(torch.mean(curve).detach().cpu()),
         "nMSE_curve": curve.detach().cpu().numpy().astype(np.float32).tolist(),
+        "step_nMSE_curve": step_curve.detach().cpu().numpy().astype(np.float32).tolist(),
     }
     for h in report:
         metrics[f"nMSE@{h}"] = float(curve[h - 1].detach().cpu())
+        metrics[f"step_nMSE@{h}"] = float(step_curve[h - 1].detach().cpu())
 
     primary_survival = None
     for threshold in thresholds:

@@ -136,7 +136,7 @@ def _scoreboard_summary(metrics: dict[str, Any], payload: dict[str, Any]) -> dic
         "VPT80_fraction": float(metrics["VPT80@0.25"]) / max_horizon,
         "nMSE_AUC": float(metrics["nMSE_AUC"]),
     }
-    for key in ("nMSE@90", "nMSE@990"):
+    for key in ("nMSE@10", "nMSE@90", "nMSE@100", "nMSE@1000", "step_nMSE@10", "step_nMSE@100", "step_nMSE@1000"):
         if key in metrics:
             summary[key] = float(metrics[key])
     return summary
@@ -166,8 +166,13 @@ def main() -> None:
         "VPT80@0.25",
         "VPT50@0.25",
         "nMSE_AUC",
+        "nMSE@10",
         "nMSE@90",
-        "nMSE@990",
+        "nMSE@100",
+        "nMSE@1000",
+        "step_nMSE@10",
+        "step_nMSE@100",
+        "step_nMSE@1000",
         "one_step_rmse",
         "open_loop_rmse@horizon",
     )
