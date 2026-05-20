@@ -85,3 +85,62 @@ Metrics to fill in after training on `public_scoreboard` dataset:
 Decision: keep / revert / iterate
 
 ---
+
+## Experiment 2: Output clamp tightening (2026-05-20)
+
+### Diagnosis
+Profiling the training delta distribution revealed:
+
+| Statistic | Value (normalized units σ) |
+|---|---|
+| abs-max | ±5.3 σ |
+| 99.99th percentile | ±3.8 σ |
+| 99th percentile | ~±2.0 σ |
+
+The Exp1 model used `delta_limit=3.0` with the soft limiter
+`delta = 3.0 * tanh(raw / 3.0)`. For `|raw| < 3`, `tanh(x/3) ≈ x/3`, so
+the limiter was effectively `delta ≈ raw` — a no-op across almost the entire
+training support. This allowed the model to output physically implausible
+deltas during rollout (especially when GRU hidden state accumulated error),
+causing the observed pole_angle spike at step 20–30.
+
+### Fix
+
+**`student/model.py`** only — two changes:
+
+1. `delta_limit` default: `3.0` → `5.5`
+   - Sets the tanh knee at 5.5σ, which is just above the training abs-max
+     (5.3σ). The limiter is now near-linear within the training support but
+     provides genuine soft saturation beyond it.
+2. Hard clamp after tanh: `delta = delta.clamp(-6.0, 6.0)`
+   - Final backstop at ±6.0σ. Should never activate during normal rollout;
+     catches runaway divergence if hidden state drifts far out-of-distribution.
+
+### Hypothesis
+Capping outputs to a range the model was actually trained on should prevent
+the step-20-30 collapse. Quantitatively: VPT80@0.25 should push well past 30.
+The limiter change is architecture-only; no retraining hyperparams changed.
+This commit can be stacked on top of Exp1 for the next Colab run.
+
+### Changed Files
+
+**`student/model.py`**:
+- `delta_limit: float = 3.0` → `delta_limit: float = 5.5`
+- Added after tanh: `delta = delta.clamp(-6.0, 6.0)`
+- Added comment block quantifying the training distribution and explaining
+  the two-stage limiting strategy
+
+No changes to `configs/student.yaml`, `student/losses.py`, `student/rollout.py`.
+
+### Results
+
+**Pending Colab run** (stacked with Exp1 changes).
+
+| Split | VPT80@0.25 | VPT50@0.25 | nMSE@10 | nMSE@100 | nMSE@1000 | nMSE_AUC |
+|---|---|---|---|---|---|---|
+| test | — | — | — | — | — | — |
+| ood | — | — | — | — | — | — |
+
+Decision: keep / revert / iterate
+
+---
