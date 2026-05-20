@@ -83,6 +83,22 @@ def rollout_loss(
 
 
 def compute_loss(model, batch: dict[str, torch.Tensor], normalizer, cfg: dict):
+    # Lazy-init physics buffers for the acceleration-prediction model (Exp4).
+    # Must run before any model.forward call. Uses register_buffer so values
+    # follow model.to(device) automatically after this first call.
+    # accel_scale[i] ≈ 5σ of training acceleration: delta_std[2,3] = a*dt → scale = 5*delta_std/dt
+    if hasattr(model, "accel_scale") and not getattr(model, "_buffers_initialized", False):
+        dev = model.accel_scale.device
+        model.obs_std.copy_(torch.as_tensor(normalizer.obs_std,    dtype=torch.float32, device=dev))
+        model.obs_mean.copy_(torch.as_tensor(normalizer.obs_mean,   dtype=torch.float32, device=dev))
+        model.delta_std.copy_(torch.as_tensor(normalizer.delta_std,  dtype=torch.float32, device=dev))
+        model.delta_mean.copy_(torch.as_tensor(normalizer.delta_mean, dtype=torch.float32, device=dev))
+        ax = float(5.0 * normalizer.delta_std[2] / model.dt)
+        ap = float(5.0 * normalizer.delta_std[3] / model.dt)
+        model.accel_scale.copy_(torch.tensor([ax, ap], dtype=torch.float32, device=dev))
+        model._buffers_initialized = True
+        print(f"[accel-model lazy-init] dt={model.dt}, accel_scale=[{ax:.4f}, {ap:.4f}]")
+
     loss_cfg = cfg["loss"]
     states = batch["states"]
     actions = batch["actions"]
