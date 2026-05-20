@@ -49,6 +49,9 @@ def compute_loss(model, batch: dict[str, torch.Tensor], normalizer, cfg: dict):
     one = one_step_delta_loss(model, states, actions, normalizer)
     horizon = int(loss_cfg.get("rollout_train_horizon", 5))
     warmup = int(cfg["eval"].get("warmup_steps", 5))
+    # Clip to what the batch supports; smoke/short datasets have fewer steps than
+    # the configured horizon, and the full scoreboard dataset always satisfies it.
+    horizon = min(horizon, states.shape[1] - warmup - 1)
     roll = rollout_loss(model, states, actions, normalizer, warmup_steps=warmup, horizon=horizon)
     total = float(loss_cfg.get("one_step_weight", 1.0)) * one + float(loss_cfg.get("rollout_weight", 0.3)) * roll
     return total, {
