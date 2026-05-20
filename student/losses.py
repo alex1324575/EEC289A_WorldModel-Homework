@@ -38,6 +38,7 @@ def rollout_loss(
     horizon: int,
     *,
     noise_sigma: float = 0.0,
+    chunk_size: int = 0,
 ) -> torch.Tensor:
     # Train local open-loop stability at random positions, not only at the
     # beginning of each stored window.
@@ -72,6 +73,12 @@ def rollout_loss(
     cur = sub_states[:, int(warmup_steps)]
     preds = []
     for h in range(int(horizon)):
+        # Truncated BPTT: detach hidden every chunk_size steps to bound the
+        # gradient path through the GRU. cur is NOT detached — state gradients
+        # still flow across chunk boundaries, preserving the output loss signal.
+        # chunk_size=0 disables truncation (default, backward-compatible).
+        if chunk_size > 0 and h > 0 and h % chunk_size == 0 and hidden is not None:
+            hidden = hidden.detach()
         cur, hidden = predict_next(model, cur, sub_actions[:, int(warmup_steps) + h], hidden, normalizer)
         preds.append(cur)
 
@@ -109,7 +116,8 @@ def compute_loss(model, batch: dict[str, torch.Tensor], normalizer, cfg: dict):
     # Clip to what the batch supports; smoke/short datasets have fewer steps than
     # the configured horizon, and the full scoreboard dataset always satisfies it.
     horizon = min(horizon, states.shape[1] - warmup - 1)
-    roll = rollout_loss(model, states, actions, normalizer, warmup_steps=warmup, horizon=horizon, noise_sigma=sigma)
+    chunk_size = int(loss_cfg.get("bptt_chunk_size", 0))
+    roll = rollout_loss(model, states, actions, normalizer, warmup_steps=warmup, horizon=horizon, noise_sigma=sigma, chunk_size=chunk_size)
     total = float(loss_cfg.get("one_step_weight", 1.0)) * one + float(loss_cfg.get("rollout_weight", 0.3)) * roll
     return total, {
         "loss/total": float(total.detach().cpu()),

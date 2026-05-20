@@ -300,7 +300,85 @@ during training. Watch the first few hundred update steps for loss explosions.
 
 ### Results
 
-**Pending Colab run** (stacked with Exp1+2+3).
+**ABANDONED** — VPT80@0.25 = 19/20 (test/ood), worse than Exp3 baseline (24/24).
+Physics-constrained 2D output made the training objective harder to optimise,
+and the model couldn't match even the unconstrained 4D-delta head.
+Model.py reverted to Exp3 state for Exp5.
+
+| Split | VPT80@0.25 | VPT50@0.25 | nMSE@10 | nMSE@100 | nMSE@1000 | nMSE_AUC |
+|---|---|---|---|---|---|---|
+| test | 19 | — | — | — | — | — |
+| ood | 20 | — | — | — | — | — |
+
+Decision: revert model.py; stack Exp5 on Exp3 base
+
+---
+
+## Experiment 5: Truncated BPTT + train horizon 300 (2026-05-20)
+
+### Context / Motivation
+
+Exp1–3 plateau at VPT80@0.25 ≈ 23–24. The error curve shows nMSE growing
+continuously after step 50 — the model is optimised for 150-step rollouts but
+evaluated at 1000. Exp4 (physics model) hurt performance, so we revert to the
+Exp3 base (sin/cos+GRU, 4D delta head).
+
+Strategy: train with horizon=300 to expose the model to longer drift, and use
+**Truncated BPTT** (chunk_size=100) to make the longer rollout computationally
+feasible. Truncated BPTT detaches the GRU hidden state every 100 steps,
+capping the recurrent gradient path length and preventing vanishing gradients
+over 300-step rollouts. The state prediction (`cur`) is NOT detached, so the
+loss signal still propagates through the full output trajectory.
+
+### Hypothesis
+
+A 300-step training horizon exposes the model to the regime where error
+actually accumulates (step 50–300). Truncated BPTT makes this feasible by
+limiting recurrent gradient depth to 100 steps. Expected: VPT80@0.25 ≥ 50,
+nMSE@100 < 0.20.
+
+### Changed Files
+
+**`student/rollout.py`** — added `truncated_bptt_rollout`:
+- Self-contained standalone function with same no-leak contract as
+  `open_loop_rollout`; detaches `hidden` at every `chunk_size` boundary
+  (h > 0, h % chunk_size == 0); `cur` is never detached
+
+**`student/losses.py`**:
+- Added `chunk_size: int = 0` keyword arg to `rollout_loss`
+- BPTT detach inline in the closed-loop rollout loop (before each
+  `predict_next` call, when `chunk_size > 0 and h > 0 and h % chunk_size == 0`)
+- `chunk_size=0` → no detach → backward-compatible with all previous configs
+- `compute_loss` reads `bptt_chunk_size` from config and passes to `rollout_loss`
+- Warmup noise (Exp3) is preserved in both BPTT and non-BPTT paths
+
+**`configs/student.yaml`**:
+
+| Param | Before | After |
+|---|---|---|
+| `loss.rollout_train_horizon` | 150 | 300 |
+| `loss.bptt_chunk_size` | — | 100 |
+| `training.train_sequence_length` | 256 | 384 (≥ warmup+horizon+1 = 311) |
+| `training.updates` | 12000 | 15000 |
+
+**`student/model.py`** — reverted from Exp4 back to Exp3 state:
+- `git checkout d02ffa9 -- student/model.py`
+- sin/cos features, GRU, 4D delta head, delta_limit=5.5, hard clamp ±6.0
+
+### Gradient flow analysis
+
+With chunk_size=100 and horizon=300:
+- GRU hidden detaches at h=100 and h=200
+- Each chunk spans 100 steps of GRU gradient
+- `cur` (state prediction) gradients still flow back to h=0 through the
+  MLP output path (PyTorch autograd follows the `cur` → `predict_next` →
+  `cur_new` chain even after `hidden.detach()`)
+- This may trigger OOM if PyTorch retains the full 300-step activation graph
+  for `cur`. If that happens, detach `cur` too (but at cost of weaker signal).
+
+### Results
+
+**Pending Colab run**.
 
 | Split | VPT80@0.25 | VPT50@0.25 | nMSE@10 | nMSE@100 | nMSE@1000 | nMSE_AUC |
 |---|---|---|---|---|---|---|
