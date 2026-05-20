@@ -218,3 +218,95 @@ when stacked with Exp1+2 changes.
 Decision: keep / revert / iterate
 
 ---
+
+## Experiment 4: Acceleration prediction + Semi-implicit Euler (2026-05-20)
+
+### Diagnosis / Motivation
+
+Exp1–3 all plateau at VPT80@0.25 ≈ 23–24. All three experiments targeted
+*how the model is trained* (longer horizon, clamped output, noise injection).
+The remaining bottleneck is *what the model predicts*: a raw 4D state-delta.
+This forces the model to learn the trivial kinematic coupling
+`delta_x ≈ x_dot * dt` and `delta_theta ≈ omega * dt` purely from data,
+introducing unnecessary approximation error that compounds over rollout.
+
+### Hypothesis
+
+Replace the 4D delta head with a 2D acceleration head `[a_cart, a_pole]` and
+derive the full 4D delta analytically via **semi-implicit Euler integration**:
+
+```
+x_dot_new = x_dot + a_cart * dt      # velocities updated first
+omega_new = omega + a_pole * dt
+x_new     = x    + x_dot_new * dt    # positions use NEW velocity (semi-implicit)
+theta_new = theta + omega_new * dt
+```
+
+The model only learns the physically non-trivial part (how forces translate to
+accelerations). Position deltas are computed exactly. Semi-implicit Euler is
+more numerically stable than explicit Euler for oscillatory systems because
+updated velocities feed back into the position update immediately.
+
+`dt = 0.04 s` (InvertedPendulum-v5: `frame_skip=2`, MuJoCo timestep `0.02 s`).
+Confirmed from Gymnasium source; `env.dt` returns 0.04.
+
+Expected: VPT80@0.25 ≥ 80 on test; nMSE@100 < 0.05 (vs ~0.45 in Exp1–3).
+
+### Implementation
+
+**`student/model.py`** — redesigned `forward`, same encoder/GRU:
+
+- `self.head = nn.Linear(hidden_dim, 2)` — 2D acceleration output
+- Five new registered buffers (`obs_std`, `obs_mean`, `delta_std`, `delta_mean`,
+  `accel_scale`) initialised to identity; filled lazily by `losses.compute_loss`
+  so they follow `model.to(device)` automatically
+- `forward`:
+  1. Encoder + GRU unchanged (sin/cos features retained from Exp1)
+  2. Head → `raw [B,2]` → `a = tanh(raw) * accel_scale` in real acceleration units
+  3. Denormalise obs: `obs_real = obs_norm * obs_std + obs_mean` (+ not −)
+  4. Semi-implicit Euler → `delta_real [B,4]` in real units
+  5. Renormalise: `delta_norm = (delta_real − delta_mean) / delta_std`
+  6. Soft limiter: `delta_limit * tanh(delta_norm / delta_limit)` (Exp2)
+  7. Return `(delta_norm, hidden)` — interface unchanged for `predict_next`
+- `delta_limit=5.5` and `dt=0.04` are hardcoded defaults (not in YAML, since
+  `build_model` in locked `checkpoint.py` only passes `hidden_dim/num_layers/use_gru`)
+
+**`student/losses.py`** — lazy buffer init added to `compute_loss`:
+
+- Runs once (guarded by `model._buffers_initialized`) before first `model.forward`
+- Copies `normalizer.{obs,delta}_{mean,std}` into the corresponding model buffers
+- Sets `accel_scale = [5σ_accel_cart, 5σ_accel_pole]` where
+  `σ_accel = delta_std[2 or 3] / dt` (since `delta_ẋ = a_cart * dt`)
+- Prints scale values at init for observability in Colab logs
+
+**`configs/student.yaml`** — unchanged (all Exp1–3 settings retained:
+`hidden_dim=192, use_gru=true, updates=12000, horizon=150, noise=0.03`).
+
+### Key correctness checks
+
+| Check | Result |
+|---|---|
+| Denorm formula | `obs = obs_norm * obs_std + obs_mean` (+, not −) ✓ |
+| Semi-implicit order | velocities first, then positions with new velocities ✓ |
+| `predict_next` compat | model returns `delta_norm` s.t. `denorm(delta_norm) = delta_real` ✓ |
+| Buffers in checkpoint | `register_buffer` → saved in state_dict, restored on load ✓ |
+| Eval safety | lazy init only triggers if `not _buffers_initialized`; buffers are correct at eval after checkpoint load ✓ |
+| Backward compat | `hasattr(model, "accel_scale")` guard — old models without this buffer skip the init block ✓ |
+
+### Risk
+
+Risk: accel_scale = 5σ of training accel might allow large initial outputs
+during training. Watch the first few hundred update steps for loss explosions.
+
+### Results
+
+**Pending Colab run** (stacked with Exp1+2+3).
+
+| Split | VPT80@0.25 | VPT50@0.25 | nMSE@10 | nMSE@100 | nMSE@1000 | nMSE_AUC |
+|---|---|---|---|---|---|---|
+| test | — | — | — | — | — | — |
+| ood | — | — | — | — | — | — |
+
+Decision: keep / revert / iterate
+
+---
