@@ -5,13 +5,23 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from .rollout import open_loop_rollout
+from wm_hw.model_utils import predict_next
 
 
-def one_step_delta_loss(model, states: torch.Tensor, actions: torch.Tensor, normalizer) -> torch.Tensor:
+def one_step_delta_loss(
+    model,
+    states: torch.Tensor,
+    actions: torch.Tensor,
+    normalizer,
+    *,
+    noise_sigma: float = 0.0,
+) -> torch.Tensor:
     obs = states[:, :-1].reshape(-1, states.shape[-1])
     act = actions.reshape(-1, actions.shape[-1])
     target_delta = (states[:, 1:] - states[:, :-1]).reshape(-1, states.shape[-1])
+    if noise_sigma > 0.0 and model.training:
+        obs_std = torch.as_tensor(normalizer.obs_std, dtype=obs.dtype, device=obs.device)
+        obs = obs + torch.randn_like(obs) * (noise_sigma * obs_std)
     obs_norm = normalizer.normalize_obs(obs)
     act_norm = normalizer.normalize_act(act)
     target_norm = normalizer.normalize_delta(target_delta)
@@ -19,7 +29,16 @@ def one_step_delta_loss(model, states: torch.Tensor, actions: torch.Tensor, norm
     return F.mse_loss(pred_norm, target_norm)
 
 
-def rollout_loss(model, states: torch.Tensor, actions: torch.Tensor, normalizer, warmup_steps: int, horizon: int) -> torch.Tensor:
+def rollout_loss(
+    model,
+    states: torch.Tensor,
+    actions: torch.Tensor,
+    normalizer,
+    warmup_steps: int,
+    horizon: int,
+    *,
+    noise_sigma: float = 0.0,
+) -> torch.Tensor:
     # Train local open-loop stability at random positions, not only at the
     # beginning of each stored window.
     needed_states = int(warmup_steps) + int(horizon) + 1
@@ -35,9 +54,30 @@ def rollout_loss(model, states: torch.Tensor, actions: torch.Tensor, normalizer,
         start = 0
     sub_states = states[:, start : start + needed_states]
     sub_actions = actions[:, start : start + int(warmup_steps) + int(horizon)]
-    preds = open_loop_rollout(model, sub_states, sub_actions, normalizer, warmup_steps=warmup_steps, horizon=horizon)
+
+    # Warmup: feed ground-truth states (with optional noise) to prime hidden state.
+    # Noise on warmup inputs simulates the small deviations from ground truth that
+    # accumulate during open-loop rollout, teaching robustness to drift.
+    # Rollout predictions are NOT noised — they are already closed-loop.
+    hidden = model.initial_hidden(sub_states.shape[0], sub_states.device)
+    add_noise = noise_sigma > 0.0 and model.training
+    if add_noise:
+        obs_std = torch.as_tensor(normalizer.obs_std, dtype=sub_states.dtype, device=sub_states.device)
+    for t in range(int(warmup_steps)):
+        obs_t = sub_states[:, t]
+        if add_noise:
+            obs_t = obs_t + torch.randn_like(obs_t) * (noise_sigma * obs_std)
+        _, hidden = predict_next(model, obs_t, sub_actions[:, t], hidden, normalizer)
+
+    cur = sub_states[:, int(warmup_steps)]
+    preds = []
+    for h in range(int(horizon)):
+        cur, hidden = predict_next(model, cur, sub_actions[:, int(warmup_steps) + h], hidden, normalizer)
+        preds.append(cur)
+
+    preds_t = torch.stack(preds, dim=1)
     targets = sub_states[:, warmup_steps + 1 : warmup_steps + 1 + horizon]
-    pred_norm = normalizer.normalize_obs(preds)
+    pred_norm = normalizer.normalize_obs(preds_t)
     target_norm = normalizer.normalize_obs(targets)
     return F.mse_loss(pred_norm, target_norm)
 
@@ -46,13 +86,14 @@ def compute_loss(model, batch: dict[str, torch.Tensor], normalizer, cfg: dict):
     loss_cfg = cfg["loss"]
     states = batch["states"]
     actions = batch["actions"]
-    one = one_step_delta_loss(model, states, actions, normalizer)
+    sigma = float(loss_cfg.get("input_noise_sigma", 0.0))
+    one = one_step_delta_loss(model, states, actions, normalizer, noise_sigma=sigma)
     horizon = int(loss_cfg.get("rollout_train_horizon", 5))
     warmup = int(cfg["eval"].get("warmup_steps", 5))
     # Clip to what the batch supports; smoke/short datasets have fewer steps than
     # the configured horizon, and the full scoreboard dataset always satisfies it.
     horizon = min(horizon, states.shape[1] - warmup - 1)
-    roll = rollout_loss(model, states, actions, normalizer, warmup_steps=warmup, horizon=horizon)
+    roll = rollout_loss(model, states, actions, normalizer, warmup_steps=warmup, horizon=horizon, noise_sigma=sigma)
     total = float(loss_cfg.get("one_step_weight", 1.0)) * one + float(loss_cfg.get("rollout_weight", 0.3)) * roll
     return total, {
         "loss/total": float(total.detach().cpu()),

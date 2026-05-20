@@ -88,6 +88,7 @@ Decision: keep / revert / iterate
 
 ## Experiment 2: Output clamp tightening (2026-05-20)
 
+
 ### Diagnosis
 Profiling the training delta distribution revealed:
 
@@ -135,6 +136,79 @@ No changes to `configs/student.yaml`, `student/losses.py`, `student/rollout.py`.
 ### Results
 
 **Pending Colab run** (stacked with Exp1 changes).
+
+| Split | VPT80@0.25 | VPT50@0.25 | nMSE@10 | nMSE@100 | nMSE@1000 | nMSE_AUC |
+|---|---|---|---|---|---|---|
+| test | — | — | — | — | — | — |
+| ood | — | — | — | — | — | — |
+
+Decision: keep / revert / iterate
+
+---
+
+## Experiment 3: Input noise injection (2026-05-20)
+
+### Diagnosis (from step-level eval of Exp1+2 checkpoint at update 11000)
+
+| Step | nMSE |
+|---|---|
+| 10 | 0.0029 (very accurate) |
+| 50 | 0.21 (collapse onset) |
+| 300 | 0.45 |
+| 500 | 1.27 |
+
+Classic **rollout horizon mismatch + narrow training distribution**: the model
+learned to be highly precise within its training distribution, but once
+open-loop rollout drifts the state slightly off-manifold, the model has no
+robustness signal and diverges catastrophically. The horizon mismatch fix
+(Exp1) addresses *how long* rollout loss reaches; this experiment addresses
+*how wide* the training distribution is.
+
+### Hypothesis
+
+Injecting small Gaussian noise `N(0, σ · obs_std)` on input observations
+during training simulates the off-manifold states that accumulate during
+open-loop rollout. The model is forced to learn a prediction function that
+is smooth around the true trajectory, not just accurate on it.
+This is a well-understood technique (trajectory smoothing / DAgger-style
+data augmentation). With `σ=0.03`, the noise is ~3% of each dimension's
+training standard deviation — small enough not to corrupt one-step accuracy,
+large enough to extend the effective training distribution into the rollout
+drift regime seen at step 50.
+
+Expected result: nMSE@50 drops below 0.10; VPT80@0.25 increases substantially
+when stacked with Exp1+2 changes.
+
+### Implementation
+
+**`student/losses.py`**:
+- `one_step_delta_loss`: noise applied to all flattened `obs` before
+  `normalize_obs`. Active only when `model.training=True`.
+- `rollout_loss`: replaced `open_loop_rollout` call with an explicit warmup
+  loop using `predict_next` directly (imported from `wm_hw.model_utils`).
+  Noise applied to each `obs_t` during the warmup loop only; rollout
+  predictions (`cur`) receive no noise — they are already in closed-loop
+  drift, adding noise would double-count.
+- `noise_sigma` is keyword-only with default `0.0` (backward compatible;
+  old configs without `input_noise_sigma` get `sigma=0.0`).
+- Per-dim scaling: `noise ~ randn_like(obs) * sigma * obs_std_tensor` where
+  `obs_std_tensor = torch.as_tensor(normalizer.obs_std, dtype=..., device=...)`.
+
+**`configs/student.yaml`**:
+- Added `loss.input_noise_sigma: 0.03`
+- All other hyperparams unchanged from Exp1+2.
+
+### Key design decisions
+- Noise on warmup (ground-truth-fed steps) but NOT on rollout (model-fed
+  steps): warmup noise trains the model to handle slight mis-calibration at
+  the start of open-loop; rollout predictions are what we want to be robust,
+  not an additional perturbation source.
+- `σ=0.03` is conservative. If VPT still collapses before step 100, try 0.05.
+  If one-step RMSE degrades noticeably, try 0.01.
+
+### Results
+
+**Pending Colab run** (stacked with Exp1+2).
 
 | Split | VPT80@0.25 | VPT50@0.25 | nMSE@10 | nMSE@100 | nMSE@1000 | nMSE_AUC |
 |---|---|---|---|---|---|---|

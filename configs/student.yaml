@@ -25,6 +25,7 @@ loss:
   one_step_weight: 1.0
   rollout_weight: 2.0
   rollout_train_horizon: 150
+  input_noise_sigma: 0.03
 
 eval:
   warmup_steps: 10
