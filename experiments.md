@@ -388,3 +388,91 @@ With chunk_size=100 and horizon=300:
 Decision: keep / revert / iterate
 
 ---
+
+## Experiment 6: Physics-based pole_angle correction
+
+**Date**: 2026-05-20
+**Branch/commit**: Exp6 (on top of Exp5 / 49302ea)
+**Hypothesis**: Diagnostic 5 revealed that the model learns ang_vel (dim 3) well (prediction ratio 0.88) but pole_angle (dim 1) poorly (ratio 0.45). The signal for Δθ in normalized space is tiny and gets dominated by the other loss terms. Instead of making the model learn the relationship Δθ ≈ ω_new·dt, we can enforce it analytically and let the network focus on the harder dynamics.
+
+### Diagnostic 5 findings (motivation)
+
+Per-dimension prediction ratios (σ_pred / σ_target in normalized space):
+
+| Dimension | Ratio |
+|---|---|
+| cart_pos (dim 0) | 0.80 |
+| pole_angle (dim 1) | **0.45** |
+| cart_vel (dim 2) | 0.95 |
+| pole_ang_vel (dim 3) | 0.88 |
+
+pole_angle is the worst-predicted dimension despite being the most safety-critical for rollout stability. It has a kinematic constraint linking it directly to ang_vel via semi-implicit Euler:
+
+```
+ω_new  = ω + Δω                    (Δω from the model — ratio 0.88, reliable)
+Δθ     = ω_new * dt                (semi-implicit: position uses updated velocity)
+dt     = 0.04 s  (InvertedPendulum-v5: frame_skip=2 × timestep=0.02)
+```
+
+### Changes
+
+**`student/model.py`**:
+
+- Added `dt=0.04` constructor parameter; `self.dt = float(dt)`
+- Added 4 `register_buffer` calls: `obs_mean`, `obs_std`, `delta_mean`, `delta_std` (all zeros/ones at init; filled lazily by `losses.compute_loss`)
+- Added physics correction block AFTER tanh + hard clamp so the physics value is not distorted by the soft limiter:
+
+```python
+delta_omega_real = delta[:, 3] * self.delta_std[3] + self.delta_mean[3]  # real Δω
+omega_real = obs_norm[:, 3] * self.obs_std[3] + self.obs_mean[3]         # real ω
+omega_new = omega_real + delta_omega_real                                 # updated ω
+delta_theta_real = omega_new * self.dt                                    # Δθ = ω_new*dt
+delta_theta_norm = (delta_theta_real - self.delta_mean[1]) / self.delta_std[1]
+delta = torch.cat([delta[:, 0:1],                 # cart_pos   — model's
+                   delta_theta_norm.unsqueeze(-1), # pole_angle — PHYSICS
+                   delta[:, 2:3],                  # cart_vel   — model's
+                   delta[:, 3:4]], dim=-1)          # ang_vel    — model's
+```
+
+**`student/losses.py`**:
+
+- Lazy-init block fills 4 physics buffers (`obs_mean`, `obs_std`, `delta_mean`, `delta_std`) from normalizer on first `compute_loss` call, guarded by `_buffers_initialized`
+- Guard condition: `hasattr(model, "obs_std") and not getattr(model, "_buffers_initialized", False)`
+- Print diagnostic: `[lazy-init] dt={model.dt}, obs_std={normalizer.obs_std}`
+
+**`configs/student.yaml`** (reverted from Exp5 to Exp3 baselines; BPTT not needed for Exp6 scope):
+
+| Param | Before (Exp5) | After |
+|---|---|---|
+| `training.updates` | 15000 | 12000 |
+| `training.train_sequence_length` | 384 | 256 |
+| `loss.rollout_train_horizon` | 300 | 150 |
+| `loss.bptt_chunk_size` | 100 | 0 |
+
+All other params (hidden_dim=192, num_layers=2, use_gru=true, rollout_weight=2.0, input_noise_sigma=0.03) unchanged from Exp3.
+
+### Key design decisions
+
+1. **Apply physics AFTER tanh+clamp** so the physics value isn't squeezed by the limiter. The learned dims (cart_pos, cart_vel, ang_vel) still pass through tanh+clamp.
+2. **Gradient signal preserved**: the physics override uses `delta[:, 3]` (ang_vel) which remains in the autograd graph. Gradients flow through the physics correction back to the ang_vel head — the model is implicitly taught to predict ang_vel well (since that directly determines Δθ).
+3. **Lazy buffer init**: buffers start as zeros/ones and are filled from the real normalizer stats on the first training step. `register_buffer` ensures they follow `model.to(device)` and are saved in checkpoints.
+4. **dt=0.04 is exact**: InvertedPendulum-v5 uses `frame_skip=2` and `timestep=0.02`, so each transition spans 0.04 s.
+
+### Expected improvement
+
+- pole_angle prediction ratio should jump from 0.45 toward ~1.0 (enforced, not learned)
+- VPT80@0.25 target: ≥30 (vs Exp3 baseline of ~23–24)
+- The physics override removes the hardest dimension from the learning problem
+
+### Results
+
+**Pending Colab run**.
+
+| Split | VPT80@0.25 | VPT50@0.25 | nMSE@10 | nMSE@100 | nMSE@1000 | nMSE_AUC |
+|---|---|---|---|---|---|---|
+| test | — | — | — | — | — | — |
+| ood | — | — | — | — | — | — |
+
+Decision: keep / revert / iterate
+
+---
