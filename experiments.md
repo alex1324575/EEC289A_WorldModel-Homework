@@ -466,6 +466,74 @@ All other params (hidden_dim=192, num_layers=2, use_gru=true, rollout_weight=2.0
 
 ### Results
 
+**Reverted** — Exp6 Colab run showed:
+- pole_angle pred_ratio improved to 0.66 (from 0.45) ✅
+- pole_ang_vel pred_ratio collapsed to 0.40 (from 0.88) ❌
+- VPT80@0.25 degraded vs Exp3 baseline
+
+Root cause: forcing pole_angle to obey ω·dt creates a hard gradient constraint through ang_vel (dim 3). The model reallocates capacity from ang_vel learning to satisfy the physics constraint, trading a well-learned dimension for a slightly better one. Net result is worse rollout stability.
+
+Decision: **revert to Exp3 model.py; pivot to soft pressure (Exp7)**
+
+---
+
+## Experiment 7: Per-dimension weighted loss
+
+**Date**: 2026-05-21
+**Branch/commit**: Exp7 (on top of Exp6 / e0821f9)
+**Base**: Exp3 state — sin/cos features, GRU, tanh limiter + hard clamp, input noise σ=0.03
+
+### Motivation
+
+Exp6 demonstrated a 4-dim capacity trade-off: hard-constraining pole_angle via physics caused ang_vel to collapse (0.88 → 0.40). The model has finite capacity and forced constraints redirect gradients.
+
+Diagnosis summary across experiments:
+
+| Dimension | Exp3 ratio | Exp6 ratio | Issue |
+|---|---|---|---|
+| cart_pos (dim 0) | 1.00 | — | Over-accurate (wastes capacity) |
+| pole_angle (dim 1) | 0.45 | 0.66 | Under-accurate (critical for VPT) |
+| cart_vel (dim 2) | 0.95 | — | Good |
+| pole_ang_vel (dim 3) | 0.88 | 0.40 | Good→collapsed under Exp6 |
+
+**Hypothesis**: Instead of hard physics constraints, apply a soft loss re-weighting. Upweighting pole_angle (dim 1) by 3× in both one-step and rollout MSE encourages the model to redirect capacity from the already-saturated cart_pos (ratio=1.0) to pole_angle, without forcing ang_vel to sacrifice itself.
+
+### Changes
+
+**`student/losses.py`**:
+
+- Added `_get_dim_weights(loss_cfg, device)` helper that reads `dim_weights` from config (default `[1.0, 1.0, 1.0, 1.0]` for backward compatibility)
+- `one_step_delta_loss`: weighted MSE via `((pred_norm - target_norm)**2 * w).mean()` instead of `F.mse_loss`
+- `rollout_loss`: same weighted MSE applied to `[B, horizon, 4]` preds vs targets
+- Both functions accept `loss_cfg: dict | None = None`; fall back to unweighted MSE when `None`
+- `compute_loss`: passes `loss_cfg` to both functions; removed stale Exp6 lazy-init block
+
+**`configs/student.yaml`**:
+
+```yaml
+loss:
+  dim_weights: [1.0, 3.0, 1.0, 1.0]   # pole_angle 3×; cart_pos, cart_vel, ang_vel 1×
+```
+
+All other params (hidden_dim=192, rollout_train_horizon=150, noise_sigma=0.03, rollout_weight=2.0) unchanged from Exp3.
+
+**`student/model.py`**: reverted to Exp3 state via `git checkout d02ffa9 -- student/model.py` (no physics buffers, no correction block).
+
+### Key design decisions
+
+1. **Weight 3× not higher**: a very large weight (e.g., 10×) risks gradient explosion on pole_angle and ignoring cart_pos/ang_vel entirely. 3× is a moderate signal boost.
+2. **Both losses weighted**: one-step loss shapes the per-step accuracy; rollout loss shapes long-horizon stability. Weighting only one would create a mismatch between training signal and eval metric.
+3. **Soft vs hard constraint**: unlike Exp6, the model can still adapt ang_vel freely. The optimizer finds the best allocation across all 4 dims given the weighted objective.
+4. **Backward compatibility**: `_get_dim_weights` defaults to `[1.0, 1.0, 1.0, 1.0]` when key is absent, so old configs still work.
+
+### Expected improvement
+
+- pole_angle should improve from ratio 0.45 toward 0.7–0.9 without degrading ang_vel
+- VPT80@0.25 target: ≥28 (conservative) or ≥35 (optimistic)
+- cart_pos ratio may drop slightly from 1.0 as capacity is redistributed
+
+### Results
+
 **Pending Colab run**.
 
 | Split | VPT80@0.25 | VPT50@0.25 | nMSE@10 | nMSE@100 | nMSE@1000 | nMSE_AUC |
