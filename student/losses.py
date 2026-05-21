@@ -8,6 +8,11 @@ import torch.nn.functional as F
 from wm_hw.model_utils import predict_next
 
 
+def _get_dim_weights(loss_cfg, device):
+    weights = loss_cfg.get("dim_weights", [1.0, 1.0, 1.0, 1.0])
+    return torch.tensor(weights, device=device).float()
+
+
 def one_step_delta_loss(
     model,
     states: torch.Tensor,
@@ -15,6 +20,7 @@ def one_step_delta_loss(
     normalizer,
     *,
     noise_sigma: float = 0.0,
+    loss_cfg: dict | None = None,
 ) -> torch.Tensor:
     obs = states[:, :-1].reshape(-1, states.shape[-1])
     act = actions.reshape(-1, actions.shape[-1])
@@ -26,7 +32,10 @@ def one_step_delta_loss(
     act_norm = normalizer.normalize_act(act)
     target_norm = normalizer.normalize_delta(target_delta)
     pred_norm, _ = model(obs_norm, act_norm, None)
-    return F.mse_loss(pred_norm, target_norm)
+    if loss_cfg is None:
+        return F.mse_loss(pred_norm, target_norm)
+    w = _get_dim_weights(loss_cfg, pred_norm.device)  # [4]
+    return ((pred_norm - target_norm) ** 2 * w).mean()
 
 
 def rollout_loss(
@@ -39,6 +48,7 @@ def rollout_loss(
     *,
     noise_sigma: float = 0.0,
     chunk_size: int = 0,
+    loss_cfg: dict | None = None,
 ) -> torch.Tensor:
     # Train local open-loop stability at random positions, not only at the
     # beginning of each stored window.
@@ -86,33 +96,25 @@ def rollout_loss(
     targets = sub_states[:, warmup_steps + 1 : warmup_steps + 1 + horizon]
     pred_norm = normalizer.normalize_obs(preds_t)
     target_norm = normalizer.normalize_obs(targets)
-    return F.mse_loss(pred_norm, target_norm)
+    if loss_cfg is None:
+        return F.mse_loss(pred_norm, target_norm)
+    w = _get_dim_weights(loss_cfg, pred_norm.device)  # [4]
+    return ((pred_norm - target_norm) ** 2 * w).mean()
 
 
 def compute_loss(model, batch: dict[str, torch.Tensor], normalizer, cfg: dict):
-    # Lazy-init normalizer buffers used by physics correction in model.forward (Exp6).
-    # Must run before any model.forward call so the angle integration uses real stats.
-    if hasattr(model, "obs_std") and not getattr(model, "_buffers_initialized", False):
-        device = next(model.parameters()).device
-        model.obs_std.copy_(torch.tensor(normalizer.obs_std,    device=device).float())
-        model.obs_mean.copy_(torch.tensor(normalizer.obs_mean,   device=device).float())
-        model.delta_std.copy_(torch.tensor(normalizer.delta_std,  device=device).float())
-        model.delta_mean.copy_(torch.tensor(normalizer.delta_mean, device=device).float())
-        model._buffers_initialized = True
-        print(f"[lazy-init] dt={model.dt}, obs_std={normalizer.obs_std}")
-
     loss_cfg = cfg["loss"]
     states = batch["states"]
     actions = batch["actions"]
     sigma = float(loss_cfg.get("input_noise_sigma", 0.0))
-    one = one_step_delta_loss(model, states, actions, normalizer, noise_sigma=sigma)
+    one = one_step_delta_loss(model, states, actions, normalizer, noise_sigma=sigma, loss_cfg=loss_cfg)
     horizon = int(loss_cfg.get("rollout_train_horizon", 5))
     warmup = int(cfg["eval"].get("warmup_steps", 5))
     # Clip to what the batch supports; smoke/short datasets have fewer steps than
     # the configured horizon, and the full scoreboard dataset always satisfies it.
     horizon = min(horizon, states.shape[1] - warmup - 1)
     chunk_size = int(loss_cfg.get("bptt_chunk_size", 0))
-    roll = rollout_loss(model, states, actions, normalizer, warmup_steps=warmup, horizon=horizon, noise_sigma=sigma, chunk_size=chunk_size)
+    roll = rollout_loss(model, states, actions, normalizer, warmup_steps=warmup, horizon=horizon, noise_sigma=sigma, chunk_size=chunk_size, loss_cfg=loss_cfg)
     total = float(loss_cfg.get("one_step_weight", 1.0)) * one + float(loss_cfg.get("rollout_weight", 0.3)) * roll
     return total, {
         "loss/total": float(total.detach().cpu()),
