@@ -5,53 +5,21 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from wm_hw.model_utils import predict_next
+from .rollout import open_loop_rollout
 
 
-def _get_dim_weights(loss_cfg, device):
-    weights = loss_cfg.get("dim_weights", [1.0, 1.0, 1.0, 1.0])
-    return torch.tensor(weights, device=device).float()
-
-
-def one_step_delta_loss(
-    model,
-    states: torch.Tensor,
-    actions: torch.Tensor,
-    normalizer,
-    *,
-    noise_sigma: float = 0.0,
-    loss_cfg: dict | None = None,
-) -> torch.Tensor:
+def one_step_delta_loss(model, states: torch.Tensor, actions: torch.Tensor, normalizer) -> torch.Tensor:
     obs = states[:, :-1].reshape(-1, states.shape[-1])
     act = actions.reshape(-1, actions.shape[-1])
     target_delta = (states[:, 1:] - states[:, :-1]).reshape(-1, states.shape[-1])
-    if noise_sigma > 0.0 and model.training:
-        obs_std = torch.as_tensor(normalizer.obs_std, dtype=obs.dtype, device=obs.device)
-        obs = obs + torch.randn_like(obs) * (noise_sigma * obs_std)
     obs_norm = normalizer.normalize_obs(obs)
     act_norm = normalizer.normalize_act(act)
     target_norm = normalizer.normalize_delta(target_delta)
     pred_norm, _ = model(obs_norm, act_norm, None)
-    if loss_cfg is None:
-        return F.mse_loss(pred_norm, target_norm)
-    w = _get_dim_weights(loss_cfg, pred_norm.device)  # [4]
-    return ((pred_norm - target_norm) ** 2 * w).mean()
+    return F.mse_loss(pred_norm, target_norm)
 
 
-def rollout_loss(
-    model,
-    states: torch.Tensor,
-    actions: torch.Tensor,
-    normalizer,
-    warmup_steps: int,
-    horizon: int,
-    *,
-    noise_sigma: float = 0.0,
-    chunk_size: int = 0,
-    loss_cfg: dict | None = None,
-) -> torch.Tensor:
-    # Train local open-loop stability at random positions, not only at the
-    # beginning of each stored window.
+def rollout_loss(model, states: torch.Tensor, actions: torch.Tensor, normalizer, warmup_steps: int, horizon: int) -> torch.Tensor:
     needed_states = int(warmup_steps) + int(horizon) + 1
     if states.shape[1] < needed_states:
         raise ValueError(
@@ -65,56 +33,29 @@ def rollout_loss(
         start = 0
     sub_states = states[:, start : start + needed_states]
     sub_actions = actions[:, start : start + int(warmup_steps) + int(horizon)]
-
-    # Warmup: feed ground-truth states (with optional noise) to prime hidden state.
-    # Noise on warmup inputs simulates the small deviations from ground truth that
-    # accumulate during open-loop rollout, teaching robustness to drift.
-    # Rollout predictions are NOT noised — they are already closed-loop.
-    hidden = model.initial_hidden(sub_states.shape[0], sub_states.device)
-    add_noise = noise_sigma > 0.0 and model.training
-    if add_noise:
-        obs_std = torch.as_tensor(normalizer.obs_std, dtype=sub_states.dtype, device=sub_states.device)
-    for t in range(int(warmup_steps)):
-        obs_t = sub_states[:, t]
-        if add_noise:
-            obs_t = obs_t + torch.randn_like(obs_t) * (noise_sigma * obs_std)
-        _, hidden = predict_next(model, obs_t, sub_actions[:, t], hidden, normalizer)
-
-    cur = sub_states[:, int(warmup_steps)]
-    preds = []
-    for h in range(int(horizon)):
-        # Truncated BPTT: detach hidden every chunk_size steps to bound the
-        # gradient path through the GRU. cur is NOT detached — state gradients
-        # still flow across chunk boundaries, preserving the output loss signal.
-        # chunk_size=0 disables truncation (default, backward-compatible).
-        if chunk_size > 0 and h > 0 and h % chunk_size == 0 and hidden is not None:
-            hidden = hidden.detach()
-        cur, hidden = predict_next(model, cur, sub_actions[:, int(warmup_steps) + h], hidden, normalizer)
-        preds.append(cur)
-
-    preds_t = torch.stack(preds, dim=1)
+    preds = open_loop_rollout(model, sub_states, sub_actions, normalizer, warmup_steps=warmup_steps, horizon=horizon)
     targets = sub_states[:, warmup_steps + 1 : warmup_steps + 1 + horizon]
-    pred_norm = normalizer.normalize_obs(preds_t)
+    pred_norm = normalizer.normalize_obs(preds)
     target_norm = normalizer.normalize_obs(targets)
-    if loss_cfg is None:
-        return F.mse_loss(pred_norm, target_norm)
-    w = _get_dim_weights(loss_cfg, pred_norm.device)  # [4]
-    return ((pred_norm - target_norm) ** 2 * w).mean()
+
+    # Exponential decay: weight early steps more to suppress cascading drift.
+    # Factor 0.03 gives step-80 a weight of ~0.09 relative to step-1.
+    h = int(horizon)
+    weights = torch.exp(-torch.arange(h, dtype=torch.float32, device=states.device) * 0.03)
+    weights = weights / weights.mean()  # keep overall loss scale
+
+    per_step = F.mse_loss(pred_norm, target_norm, reduction="none").mean(dim=(0, 2))  # [H]
+    return (per_step * weights).mean()
 
 
 def compute_loss(model, batch: dict[str, torch.Tensor], normalizer, cfg: dict):
     loss_cfg = cfg["loss"]
     states = batch["states"]
     actions = batch["actions"]
-    sigma = float(loss_cfg.get("input_noise_sigma", 0.0))
-    one = one_step_delta_loss(model, states, actions, normalizer, noise_sigma=sigma, loss_cfg=loss_cfg)
+    one = one_step_delta_loss(model, states, actions, normalizer)
     horizon = int(loss_cfg.get("rollout_train_horizon", 5))
     warmup = int(cfg["eval"].get("warmup_steps", 5))
-    # Clip to what the batch supports; smoke/short datasets have fewer steps than
-    # the configured horizon, and the full scoreboard dataset always satisfies it.
-    horizon = min(horizon, states.shape[1] - warmup - 1)
-    chunk_size = int(loss_cfg.get("bptt_chunk_size", 0))
-    roll = rollout_loss(model, states, actions, normalizer, warmup_steps=warmup, horizon=horizon, noise_sigma=sigma, chunk_size=chunk_size, loss_cfg=loss_cfg)
+    roll = rollout_loss(model, states, actions, normalizer, warmup_steps=warmup, horizon=horizon)
     total = float(loss_cfg.get("one_step_weight", 1.0)) * one + float(loss_cfg.get("rollout_weight", 0.3)) * roll
     return total, {
         "loss/total": float(total.detach().cpu()),
